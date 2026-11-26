@@ -24,4 +24,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "TowerDefense"
 include(":app")
+include(":core")
  
