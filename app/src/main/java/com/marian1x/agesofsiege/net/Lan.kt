@@ -121,7 +121,7 @@ class Connection(
     }
 }
 
-private fun BufferedReader.readGameFrame(): String? {
+internal fun BufferedReader.readGameFrame(): String? {
     val frame = StringBuilder()
     while (true) {
         when (val next = read()) {

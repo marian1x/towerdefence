@@ -56,7 +56,8 @@ class MpSession private constructor(
     private var relayHost: RelayHost? = null
     private var guestInvite: RelayInvite? = null
     private var relayReady by mutableStateOf(false)
-    val onlineInvite get() = relayHost?.invite?.takeIf { relayReady }?.toString()
+    private var startOnJoin = false
+    val onlineInvite get() = relayHost?.invite?.takeIf { relayReady && !startOnJoin }?.toString()
     private var realm: MatchRealm? = null
     private var link: Connection? = null
     private var hostAddress = ""
@@ -82,10 +83,12 @@ class MpSession private constructor(
             pace: Pace,
             endpoint: RelayEndpoint? = null,
             hostKey: String = "",
+            lobbyInvite: RelayInvite? = null,
         ) = MpSession(c, true, name, isOnline = endpoint != null).apply {
                 this.mode = mode
                 this.difficulty = difficulty
                 this.pace = pace
+                startOnJoin = lobbyInvite != null
                 phase = Phase.LOBBY
                 status = "Opening the game…"
                 if (endpoint == null) {
@@ -97,11 +100,12 @@ class MpSession private constructor(
                     }
                 } else {
                     relayHost = RelayHost(
-                        invite = RelayInvite.create(endpoint),
+                        invite = lobbyInvite ?: RelayInvite.create(endpoint),
                         key = hostKey,
                         onReady = {
                             relayReady = true
                             status = if (phase == Phase.PLAYING) "Room is ready for your friend to reconnect."
+                            else if (startOnJoin) "Waiting for your friend to join…"
                             else "Room is ready. Send the invite to your friend."
                         },
                         onIncoming = ::onIncoming,
@@ -240,6 +244,7 @@ class MpSession private constructor(
         peerConnected = true
         status = "$name joined! Press START when you're ready."
         from.send(NetMsg.Welcome(s, 1, started = false))
+        if (startOnJoin) startMatch()
     }
 
     fun startMatch() {

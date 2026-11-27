@@ -245,6 +245,21 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         mp = MpSession.join(this, name.ifBlank { "Guest" }, host.trim(), port)
     }
 
+    fun hostLobbyMatch(
+        name: String,
+        mode: com.marian1x.agesofsiege.core.MatchMode,
+        invite: com.marian1x.agesofsiege.net.RelayInvite,
+        ticket: String,
+    ) {
+        mp?.close()
+        mp = MpSession.host(
+            this, context, name, mode,
+            com.marian1x.agesofsiege.core.Difficulty.NORMAL,
+            com.marian1x.agesofsiege.core.Pace.STANDARD,
+            endpoint = invite.endpoint, hostKey = ticket, lobbyInvite = invite,
+        )
+    }
+
     fun joinOnlineMatch(name: String, invite: com.marian1x.agesofsiege.net.RelayInvite) {
         mp?.close()
         mp = MpSession.joinOnline(this, name.ifBlank { "Guest" }, invite)

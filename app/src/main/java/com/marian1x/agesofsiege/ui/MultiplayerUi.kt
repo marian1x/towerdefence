@@ -65,7 +65,7 @@ import com.marian1x.agesofsiege.net.localIpAddresses
 import com.marian1x.agesofsiege.net.validRelayHostKey
 
 @Composable
-private fun TextFieldRow(
+internal fun TextFieldRow(
     value: String,
     onChange: (String) -> Unit,
     label: String,
@@ -100,10 +100,11 @@ fun MultiplayerPanel(c: GameController) {
                 Text(session.status, color = Color(0xFFFFB070), fontSize = 13.sp)
                 Spacer(Modifier.height(6.dp))
             }
-            ChipRow(listOf("SAME WI-FI", "ONLINE"), connectionMode) { connectionMode = it }
+            ChipRow(listOf("SAME WI-FI", "FRIENDS LOBBY", "DIRECT ONLINE"), connectionMode) { connectionMode = it }
             Spacer(Modifier.height(8.dp))
             when {
-                connectionMode == 1 -> SetupTabs(c, online = true, retryJoin = session != null)
+                connectionMode == 1 -> FriendsLobbyPanel(c)
+                connectionMode == 2 -> SetupTabs(c, online = true, retryJoin = session != null)
                 Build.VERSION.SDK_INT >= 37 -> LocalNetworkPermission { SetupTabs(c, online = false, retryJoin = session != null) }
                 else -> SetupTabs(c, online = false, retryJoin = session != null)
             }
@@ -255,7 +256,7 @@ private fun Lobby(c: GameController, s: MpSession) {
         if (s.isOnline) {
             s.onlineInvite?.let { invite ->
                 var copied by remember(invite) { mutableStateOf(false) }
-                Text("Ask your friend to open Online → Join a game and paste the invite.", color = TextDim, fontSize = 12.sp)
+                Text("Ask your friend to open Direct online → Join a game and paste the invite.", color = TextDim, fontSize = 12.sp)
                 Spacer(Modifier.height(6.dp))
                 MenuButton(if (copied) "INVITE COPIED" else "COPY INVITE", Modifier.fillMaxWidth()) {
                     context.getSystemService(ClipboardManager::class.java)

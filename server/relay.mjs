@@ -1,19 +1,22 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createLobby, KEY_PATTERN, matchesKey } from './lobby.mjs';
 import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 
-const HOST_KEY_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 const ROOM_PATTERN = /^[a-f0-9]{32}$/;
 const MAX_HANDSHAKE_BYTES = 256;
 const MAX_ROOMS = 8;
 const HANDSHAKE_TIMEOUT_MS = 5000;
 
-export function createRelay(hostKey) {
-    if (!HOST_KEY_PATTERN.test(hostKey ?? '')) {
+export function createRelay(hostKey, lobbyKey) {
+    if (!KEY_PATTERN.test(hostKey ?? '')) {
         throw new Error('Set AGES_OF_SIEGE_HOST_KEY to a random 32–128 character key.');
     }
 
+    if (lobbyKey && !KEY_PATTERN.test(lobbyKey)) {
+        throw new Error('Set AGES_OF_SIEGE_LOBBY_KEY to a random 32–128 character key.');
+    }
     const secret = Buffer.from(hostKey);
+    const lobby = createLobby(lobbyKey);
     const rooms = new Map();
     const server = createServer(socket => {
         let handshake = Buffer.alloc(0);
@@ -56,14 +59,23 @@ export function createRelay(hostKey) {
 
             socket.removeListener('data', receiveHandshake);
             const [version, command, code, key, extra] = handshake.subarray(0, newline).toString('utf8').split(' ');
-            if (version !== 'AOS1' || !ROOM_PATTERN.test(code ?? '') || extra !== undefined) {
+            if (version !== 'AOS1' || extra !== undefined) {
+                reject('invalid-request');
+                return;
+            }
+            if (command === 'LOBBY') {
+                const error = lobby.attach(socket, code, key);
+                if (error) reject(error);
+                else clearTimeout(handshakeTimeout);
+                return;
+            }
+            if (!ROOM_PATTERN.test(code ?? '')) {
                 reject('invalid-request');
                 return;
             }
 
             if (command === 'HOST' && key !== undefined) {
-                const candidate = Buffer.from(key);
-                if (candidate.length !== secret.length || !timingSafeEqual(candidate, secret)) {
+                if (!matchesKey(key, secret) && !lobby.allowsHost(code, key)) {
                     reject('host-key');
                     return;
                 }
@@ -82,6 +94,7 @@ export function createRelay(hostKey) {
                 });
                 clearTimeout(handshakeTimeout);
                 socket.write('READY\n');
+                lobby.roomReady(room);
             } else if (command === 'JOIN' && key === undefined) {
                 const host = rooms.get(code);
                 if (!host || host.paired || host.socket.writableEnded || host.socket.destroyed) {
@@ -107,6 +120,6 @@ export function createRelay(hostKey) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    const server = createRelay(process.env.AGES_OF_SIEGE_HOST_KEY);
+    const server = createRelay(process.env.AGES_OF_SIEGE_HOST_KEY, process.env.AGES_OF_SIEGE_LOBBY_KEY);
     server.listen(47822, '127.0.0.1', () => console.log('Game relay listening on 127.0.0.1:47822'));
 }

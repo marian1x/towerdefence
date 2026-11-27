@@ -6,11 +6,12 @@ import assert from 'node:assert/strict';
 import { createRelay } from './relay.mjs';
 
 const hostKey = 'example-host-key-for-testing-only';
+const lobbyKey = 'example-lobby-key-for-testing-only';
 const room = 'a'.repeat(32);
 const otherRoom = 'b'.repeat(32);
 
 async function startRelay(t) {
-    const server = createRelay(hostKey);
+    const server = createRelay(hostKey, lobbyKey);
     const clients = new Set();
     t.after(() => {
         for (const client of clients) client.destroy();
@@ -83,4 +84,63 @@ test('delivers the final frame before closing and allows the host to reopen the 
     resumedGuest.send(`AOS1 JOIN ${room}`);
     assert.equal(await resumedGuest.read(), 'PAIRED');
     assert.equal(await resumedHost.read(), 'PAIRED');
+});
+
+async function readMessage(client, type) {
+    for (;;) {
+        const line = await client.read();
+        assert.ok(line, `Connection ended before receiving ${type}`);
+        const message = JSON.parse(line);
+        if (message.t === type) return message;
+    }
+}
+
+test('only friends can see the roster and accepting an invite grants access to just one room', async t => {
+    const client = await startRelay(t);
+    const name = value => Buffer.from(value).toString('base64url');
+    const stranger = await client();
+    stranger.send(`AOS1 LOBBY ${hostKey} ${name('Stranger')}`);
+    assert.equal(await stranger.read(), 'ERROR lobby-key');
+
+    const alice = await client();
+    alice.send(`AOS1 LOBBY ${lobbyKey} ${name('Alice')}`);
+    assert.equal(await alice.read(), 'READY');
+    assert.deepEqual((await readMessage(alice, 'roster')).players, []);
+
+    const bob = await client();
+    bob.send(`AOS1 LOBBY ${lobbyKey} ${name('Bob')}`);
+    assert.equal(await bob.read(), 'READY');
+    const [bobEntry] = (await readMessage(alice, 'roster')).players;
+    assert.deepEqual({ name: bobEntry.name, available: bobEntry.available }, { name: 'Bob', available: true });
+
+    alice.send(`INVITE ${bobEntry.id} COOP`);
+    const firstInvite = await readMessage(bob, 'invite');
+    assert.equal(firstInvite.name, 'Alice');
+    assert.equal(firstInvite.mode, 'COOP');
+    bob.send(`DECLINE ${firstInvite.id}`);
+    assert.match((await readMessage(alice, 'info')).text, /declined/);
+
+    alice.send(`INVITE ${bobEntry.id} VERSUS`);
+    const secondInvite = await readMessage(bob, 'invite');
+    assert.equal(secondInvite.mode, 'VERSUS');
+    bob.send(`ACCEPT ${secondInvite.id}`);
+    const match = await readMessage(alice, 'match');
+    alice.socket.end();
+
+    const wrongRoom = await client();
+    wrongRoom.send(`AOS1 HOST ${otherRoom} ${match.key}`);
+    assert.equal(await wrongRoom.read(), 'ERROR host-key');
+
+    const host = await client();
+    host.send(`AOS1 HOST ${match.room} ${match.key}`);
+    assert.equal(await host.read(), 'READY');
+    const guestMatch = await readMessage(bob, 'match');
+    assert.equal(guestMatch.room, match.room);
+    assert.equal(guestMatch.key, undefined);
+    bob.socket.end();
+
+    const guest = await client();
+    guest.send(`AOS1 JOIN ${guestMatch.room}`);
+    assert.equal(await guest.read(), 'PAIRED');
+    assert.equal(await host.read(), 'PAIRED');
 });

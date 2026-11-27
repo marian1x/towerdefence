@@ -52,7 +52,7 @@ class RelayInvite private constructor(val endpoint: RelayEndpoint, val code: Str
 
 private class RelayException(message: String, val retryable: Boolean = true) : IOException(message)
 
-private fun openSocket(raw: Socket, endpoint: RelayEndpoint): SSLSocket {
+internal fun openSocket(raw: Socket, endpoint: RelayEndpoint): SSLSocket {
     raw.connect(InetSocketAddress(endpoint.host, endpoint.port), HANDSHAKE_TIMEOUT_MS)
     raw.keepAlive = true
     val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
@@ -63,7 +63,7 @@ private fun openSocket(raw: Socket, endpoint: RelayEndpoint): SSLSocket {
     }
 }
 
-private fun Socket.relayRequest(command: String) {
+internal fun Socket.relayRequest(command: String) {
     getOutputStream().apply {
         write("AOS1 $command\n".toByteArray(Charsets.US_ASCII))
         flush()
@@ -71,7 +71,7 @@ private fun Socket.relayRequest(command: String) {
 }
 
 /** Reads just the relay's reply. The first gameplay frame may already be on the same stream. */
-private fun Socket.expectReply(expected: String) {
+internal fun Socket.expectReply(expected: String) {
     val input = getInputStream()
     val reply = buildString {
         while (length < 128) {
@@ -86,6 +86,9 @@ private fun Socket.expectReply(expected: String) {
     throw when (reply) {
         "ERROR host-key" -> RelayException("The relay rejected your host key.", retryable = false)
         "ERROR host-busy" -> RelayException("The relay is busy. Try again in a moment.")
+        "ERROR lobby-key" -> RelayException("This lobby access code was rejected.", retryable = false)
+        "ERROR lobby-unavailable" -> RelayException("This server has no friends lobby.", retryable = false)
+        "ERROR lobby-full" -> RelayException("This lobby is full.")
         "ERROR room-unavailable" -> RelayException("This room is unavailable. Ask the host to check the invite.")
         else -> RelayException("Invalid response from the relay.", retryable = false)
     }
