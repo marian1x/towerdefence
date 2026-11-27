@@ -32,7 +32,7 @@ Status: **approved 2026-11-27**. Phase 0–1 done; Phase 2 (world + troops) and 
 - **Rival AI lords (1–5, default 2):** same rules as the player, personalities (Warlord, Builder, Explorer, Merchant).
   They start far away and explore their own area first; first contact after ~2–4 real days at Standard pace.
   Raids on gatherers/outposts, auto-resolved field battles, capital assaults both ways; defeated rivals pay tribute.
-- **XP & coins:** towers/squads earn XP from kills → ranks I–V (+damage, +range); specialization choice at rank III.
+- **XP & coins:** towers/squads earn XP from kills and gain ranks I–V (+damage, +range). Attack towers can also reach level 5 through paid upgrades and choose a specialization at level 3.
   Kills drop coins.
 - **Shop (Market):** gear upgrades, consumables (repair/heal kits, speed-ups, raid shields, maps, mercenaries), boosts,
   daily deals, resource trade. Gems are earned only by playing.

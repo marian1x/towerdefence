@@ -23,6 +23,7 @@ import com.marian1x.agesofsiege.core.Phase
 import com.marian1x.agesofsiege.core.SaveData
 import com.marian1x.agesofsiege.core.Structure
 import com.marian1x.agesofsiege.core.StructureKind
+import com.marian1x.agesofsiege.core.TowerSpecialization
 import com.marian1x.agesofsiege.engine.Mesh
 import com.marian1x.agesofsiege.engine.MeshBuilder
 import com.marian1x.agesofsiege.engine.Model
@@ -30,6 +31,7 @@ import com.marian1x.agesofsiege.engine.ModelLibrary
 import com.marian1x.agesofsiege.engine.Models
 import com.marian1x.agesofsiege.engine.Palette
 import com.marian1x.agesofsiege.engine.Renderer3D
+import com.marian1x.agesofsiege.engine.TowerArt
 import java.io.File
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -59,12 +61,13 @@ data class SelectedInfo(
     val upgradeCost: Cost?,
     val refund: Cost,
     val stats: String,
+    val specialization: TowerSpecialization?,
 )
 
 data class Toast(val id: Long, val text: String, val color: Long)
 
 enum class Screen { MENU, GAME, WORLD }
-enum class Overlay { NONE, PAUSE, SETTINGS, NEW_GAME, ARMY, CONFIRM_RESTART, MULTIPLAYER }
+enum class Overlay { NONE, PAUSE, SETTINGS, NEW_GAME, ARMY, CONFIRM_RESTART, MULTIPLAYER, SPECIALIZATION }
 
 /** Player preferences (device-local, not part of the save). */
 class Prefs(context: Context) {
@@ -145,7 +148,17 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     private val worldModels = ArrayList<Model>()
     private var waterEntity = 0
 
-    private class StructureVisual(val base: Model, val head: Model?, val level: Int, val headY: Float, val crew: Boolean) {
+    private class Piece(val root: Int, val top: Float, val model: Model? = null)
+
+    private class StructureVisual(
+        val base: Piece,
+        val head: Piece?,
+        val detail: Piece?,
+        val level: Int,
+        val specialization: TowerSpecialization?,
+        val headY: Float,
+    ) {
+        val crew get() = head?.model?.name == "archer_crew"
         var animTime = Random.nextFloat() * 3f
         /** 1 -> 0 after being selected: a short squash-and-stretch so the player sees what was picked. */
         var pop = 0f
@@ -177,7 +190,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     private val troopDiedIds = HashSet<Int>()
     private val corpses = ArrayList<Corpse>()
     private val diedIds = HashSet<Int>()
-    private val projectileVisuals = HashMap<Int, Model>()
+    private val projectileVisuals = HashMap<Int, Piece>()
+    private val towerMaterial = r3d.litInstance(Palette.WHITE)
     private var selectionModel: Model? = null
     private var selectionFor = -1
 
@@ -204,6 +218,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     init {
         models.warmUp("raider" to 16, "arrow" to 16, "archer_crew" to 8)
+        meshPiece("entrance-banners") { TowerArt.gates(this, game.gates) }
         buildWorld()
         r3d.camTargetX = 14f
         r3d.camTargetZ = 8.6f
@@ -435,7 +450,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     private fun baseModelName(s: Structure): String = when (s.defId) {
         "keep" -> "keep"
         "wall" -> "wall_block"
-        else -> "${s.defId}_${s.level}"
+        else -> "${s.defId}_${s.level.coerceIn(1, 3)}"
     }
 
     private fun headModelName(s: Structure): String? = when (s.defId) {
@@ -443,6 +458,58 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         "ballista" -> "ballista_head"
         "catapult" -> "catapult_head"
         else -> null
+    }
+
+    private fun modelPiece(name: String, batch: Int): Piece {
+        val model = models.acquire(name, batch)
+        return Piece(model.root, models.bounds(name)?.get(4) ?: 1f, model)
+    }
+
+    private fun meshPiece(key: String, build: MeshBuilder.() -> Unit): Piece {
+        val geometry = mesh(key, build)
+        val entity = r3d.createRenderable(geometry, towerMaterial)
+        r3d.scene.addEntity(entity)
+        return Piece(entity, geometry.box.center[1] + geometry.box.halfExtent[1])
+    }
+
+    private fun release(piece: Piece) {
+        val model = piece.model
+        if (model != null) models.release(model) else r3d.destroyEntity(piece.root)
+    }
+
+    private fun createStructureVisual(s: Structure): StructureVisual {
+        val baseName = baseModelName(s)
+        val tier = s.level.coerceIn(1, 3)
+        val base = if (TowerArt.hasBody(s.defId)) {
+            meshPiece(baseName) { TowerArt.body(this, s.defId, tier) }
+        } else {
+            modelPiece(baseName, if (s.kind == StructureKind.WALL) 24 else 6)
+        }
+        val head = if (s.defId == "repeater") {
+            meshPiece("repeater-head") { TowerArt.repeaterHead(this) }
+        } else {
+            headModelName(s)?.let { modelPiece(it, 6) }
+        }
+        val headY = when (s.defId) {
+            "repeater" -> TowerArt.REPEATER_MOUNT
+            "frost" -> 1.25f
+            "brazier" -> 0.83f
+            else -> models.headY(baseName)
+        }
+        val detail = if (s.kind == StructureKind.TOWER && (s.level >= 4 || s.specialization != null)) {
+            meshPiece("tower-detail-${s.level}-${s.specialization}") {
+                TowerArt.upgradeDetail(this, s.level, s.specialization)
+            }
+        } else null
+        r3d.setTransform(base.root, s.cx, 0f, s.cy)
+        detail?.let { r3d.setTransform(it.root, s.cx, 0f, s.cy) }
+        return StructureVisual(base, head, detail, s.level, s.specialization, headY)
+    }
+
+    private fun releaseStructureVisual(visual: StructureVisual) {
+        release(visual.base)
+        visual.head?.let(::release)
+        visual.detail?.let(::release)
     }
 
     private fun enemyModelName(defId: String) = when (defId) {
@@ -524,10 +591,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     private fun clearVisuals() {
         villagers.clear()
-        for (v in structureVisuals.values) {
-            models.release(v.base)
-            v.head?.let { models.release(it) }
-        }
+        structureVisuals.values.forEach(::releaseStructureVisual)
         structureVisuals.clear()
         for (v in enemyVisuals.values) models.release(v.model)
         enemyVisuals.clear()
@@ -535,7 +599,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         troopVisuals.clear()
         for (c in corpses) models.release(c.model)
         corpses.clear()
-        for (m in projectileVisuals.values) models.release(m)
+        projectileVisuals.values.forEach(::release)
         projectileVisuals.clear()
         selectionModel?.let { models.release(it) }
         selectionModel = null
@@ -608,7 +672,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     }
 
     /** World height just above a structure's top (for HUD markers). */
-    fun markerHeight(s: Structure): Float = (structureVisuals[s.id]?.headY ?: 1f) + 0.85f
+    fun markerHeight(s: Structure): Float = structureTop(s) + 0.18f
 
     private fun applyShake(dt: Float) {
         if (shake <= 0f) return
@@ -664,30 +728,20 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         while (it.hasNext()) {
             val (id, v) = it.next()
             val s = g.structures[id]
-            if (s == null || s.level != v.level) {
-                models.release(v.base)
-                v.head?.let { h -> models.release(h) }
+            if (s == null || s.level != v.level || s.specialization != v.specialization) {
+                releaseStructureVisual(v)
                 it.remove()
             }
         }
         for (s in g.structures.values) {
-            var v = structureVisuals[s.id]
-            if (v == null) {
-                val baseName = baseModelName(s)
-                val base = models.acquire(baseName, if (s.kind == StructureKind.WALL) 24 else 6)
-                r3d.setTransform(base.root, s.cx, 0f, s.cy)
-                val headName = headModelName(s)
-                val head = headName?.let { models.acquire(it, 6) }
-                v = StructureVisual(base, head, s.level, models.headY(baseName), headName == "archer_crew")
-                structureVisuals[s.id] = v
-            }
+            val v = structureVisuals.getOrPut(s.id) { createStructureVisual(s) }
             val head = v.head ?: continue
             v.animTime += dt
             if (v.crew) {
                 // Archer on the battlements: shoot animation right after firing, idle otherwise.
                 r3d.setTransform(head.root, s.cx, v.headY, s.cy, yaw = s.aim, scale = 0.5f)
-                if (s.sinceShot < 0.6f) head.animate("holding-both-shoot", s.sinceShot, loop = false)
-                else head.animate("idle", v.animTime)
+                if (s.sinceShot < 0.6f) head.model?.animate("holding-both-shoot", s.sinceShot, loop = false)
+                else head.model?.animate("idle", v.animTime)
             } else {
                 val recoil = if (s.sinceShot < 0.18f) (1f - s.sinceShot / 0.18f) else 0f
                 val kickPitch = if (s.defId == "catapult") -recoil * 0.45f else 0f
@@ -770,26 +824,39 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             if (!p.alive) continue
             alive += p.id
             val m = projectileVisuals.getOrPut(p.id) {
-                models.acquire(if (p.visual == "catapult") "boulder" else "arrow", 16)
+                when (p.visual) {
+                    "frost", "brazier" -> meshPiece("shot-${p.visual}") { TowerArt.shot(this, p.visual) }
+                    "catapult" -> modelPiece("boulder", 16)
+                    else -> modelPiece("arrow", 16)
+                }
             }
             val x = p.prevX + (p.x - p.prevX) * alpha
             val z = p.prevY + (p.y - p.prevY) * alpha
             val (_, h1) = projectileHeights(p.visual)
             val owner = g.structures[p.ownerId]
             val h0 = owner?.let { structureVisuals[it.id]?.headY?.plus(0.25f) } ?: 0.5f
-            val arc = when (p.visual) { "catapult" -> 2.4f; "archer" -> 0.5f; else -> 0.15f }
+            val arc = when (p.visual) {
+                "catapult" -> 2.4f
+                "brazier" -> 0.65f
+                "archer", "frost" -> 0.5f
+                else -> 0.15f
+            }
             val t = p.progress.coerceIn(0f, 1f)
             val y = h0 + (h1 - h0) * t + arc * 4f * t * (1f - t)
             val slope = ((h1 - h0) + arc * 4f * (1f - 2f * t)) / max(0.5f, p.totalDist)
             val yaw = atan2(p.tx - p.x, p.ty - p.y) + ARROW_YAW_OFFSET
-            val scale = if (p.visual == "ballista") 1.6f else 1f
+            val scale = when (p.visual) {
+                "ballista" -> 1.6f
+                "repeater" -> 1.18f
+                else -> 1f
+            }
             r3d.setTransform(m.root, x, y, z, yaw = yaw, pitch = -atan2(slope, 1f), scale = scale)
         }
         val it = projectileVisuals.entries.iterator()
         while (it.hasNext()) {
             val (id, m) = it.next()
             if (id !in alive) {
-                models.release(m)
+                release(m)
                 it.remove()
             }
         }
@@ -800,9 +867,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         val sel = hud.selected?.let { game.structures[it.id] }
         val showRing = sel != null && sel.kind == StructureKind.TOWER
         if (showRing && sel != null) {
-            val def = sel.towerDef
-            val range = def.range + Content.levelRangeBonus(sel.level) + Content.rankRangeBonus(sel.rank)
-            r3d.setTransform(ringEntity, sel.cx, 0f, sel.cy, scale = range)
+            r3d.setTransform(ringEntity, sel.cx, 0f, sel.cy, scale = sel.towerRange)
         }
         setShown(ringEntity, showRing, ringShown).also { ringShown = showRing }
         if (sel?.id != selectionFor) {
@@ -821,7 +886,10 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             val s = game.structures[id] ?: continue
             v.pop = max(0f, v.pop - dt * 3.5f)
             val k = sin(v.pop * Math.PI.toFloat())
-            r3d.setTransform(v.base.root, s.cx, 0f, s.cy, scale = 1f + 0.06f * k, sy = 1f + 0.12f * k)
+            val scale = 1f + 0.06f * k
+            val heightScale = 1f + 0.12f * k
+            r3d.setTransform(v.base.root, s.cx, 0f, s.cy, scale = scale, sy = heightScale)
+            v.detail?.let { r3d.setTransform(it.root, s.cx, 0f, s.cy, scale = scale, sy = heightScale) }
         }
 
         val building = hud.mode is InputMode.Build
@@ -868,13 +936,22 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             is GameEvent.Shot -> {
                 val s = game.structures[ev.structureId] ?: continue
                 val hy = structureVisuals[s.id]?.headY ?: 1f
-                if (ev.visual == "catapult") fx.burst(s.cx, hy + 0.3f, s.cy, 5, Palette.DIRT, speed = 1f, up = 1f, size = 0.06f)
+                val color = when (ev.visual) {
+                    "catapult" -> Palette.DIRT
+                    "brazier" -> TowerArt.FIRE
+                    "frost" -> TowerArt.ICE
+                    else -> null
+                }
+                if (color != null) fx.burst(s.cx, hy + 0.3f, s.cy, 5, color, speed = 1f, up = 1f, size = 0.06f)
             }
             is GameEvent.Hit -> {
-                if (ev.splash > 0f) {
-                    fx.burst(ev.x, 0.15f, ev.y, 14, Palette.DIRT_DARK, speed = 3f, up = 3.5f, size = 0.09f, life = 0.8f)
+                if (ev.visual == "frost") {
+                    fx.burst(ev.x, 0.15f, ev.y, 17, TowerArt.ICE, glow = true, speed = 2.1f, up = 1.9f, size = 0.07f, life = 0.55f, glowIntensity = 2.5f)
+                } else if (ev.splash > 0f) {
+                    val smoke = if (ev.visual == "brazier") 0x694155 else Palette.DIRT_DARK
+                    fx.burst(ev.x, 0.15f, ev.y, 14, smoke, speed = 3f, up = 3.5f, size = 0.09f, life = 0.8f)
                     fx.burst(ev.x, 0.25f, ev.y, 10, 0xFFA640, glow = true, speed = 2.5f, up = 2f, size = 0.1f, life = 0.35f, glowIntensity = 3f)
-                    shake = max(shake, 0.25f)
+                    if (ev.visual == "catapult") shake = max(shake, 0.25f)
                 } else {
                     fx.burst(ev.x, 0.35f, ev.y, 4, 0xFFE2A0, glow = true, speed = 1.8f, up = 1.5f, size = 0.04f, life = 0.25f, glowIntensity = 2f)
                 }
@@ -922,6 +999,12 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             is GameEvent.Upgraded -> {
                 val s = game.structures[ev.structureId] ?: continue
                 fx.burst(s.cx, 1f, s.cy, 16, 0x9FE3FF, glow = true, speed = 1.5f, up = 3f, size = 0.05f, life = 0.8f, gravity = 3f, glowIntensity = 2.5f)
+            }
+            is GameEvent.Specialized -> {
+                val s = game.structures[ev.structureId] ?: continue
+                fx.burst(s.cx, 1f, s.cy, 20, Palette.GOLD, glow = true, speed = 1.5f, up = 3f, size = 0.05f, life = 0.65f)
+                toast("${s.towerDef.name} gained ${ev.specialization.label}", 0xFFFFD34D)
+                save()
             }
             is GameEvent.Removed -> Unit
             is GameEvent.TroopRecruited -> {
@@ -992,9 +1075,13 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             StructureKind.TOWER -> {
                 val d = s.towerDef
                 name = d.name; maxLevel = d.upgradeCosts.size + 1
-                val dmg = d.damage * Content.levelDamageMult(s.level) * Content.rankDamageMult(s.rank)
-                val range = d.range + Content.levelRangeBonus(s.level) + Content.rankRangeBonus(s.rank)
-                stats = "DMG ${"%.0f".format(dmg)} · RNG ${"%.1f".format(range)} · ${d.damageType.name.lowercase().replace('_', '-')}"
+                val effect = when {
+                    d.chillSeconds > 0f -> " · Slow"
+                    d.splash > 0f -> " · Splash"
+                    d.damageType == com.marian1x.agesofsiege.core.DamageType.ANTI_ARMOR -> " · Anti-armor"
+                    else -> ""
+                }
+                stats = "DMG ${"%.0f".format(s.towerDamage)} · RNG ${"%.1f".format(s.towerRange)}\n${"%.2f".format(s.towerFireRate)} shots/s$effect"
             }
             StructureKind.WALL -> { name = "Stone Wall"; maxLevel = 1; stats = "Blocks raider paths" }
             StructureKind.BUILDING -> {
@@ -1011,7 +1098,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         val next = Content.rankXp.firstOrNull { it > s.xp }
         return SelectedInfo(
             s.id, name, s.kind, s.level, maxLevel, s.rank, s.xp, next, s.kills,
-            game.upgradeCost(s), s.invested * Content.SELL_REFUND, stats,
+            game.upgradeCost(s), s.invested * Content.SELL_REFUND, stats, s.specialization,
         )
     }
 
@@ -1108,10 +1195,9 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     /** Height of a structure's clickable box: the model's top, or the crew / weapon on top of a tower. */
     private fun structureTop(s: Structure): Float {
-        var top = models.bounds(baseModelName(s))?.get(4) ?: 1f
-        val v = structureVisuals[s.id]
-        if (v?.head != null) top = max(top, v.headY + if (v.crew) 0.55f else 0.35f)
-        return top.coerceAtLeast(0.3f)
+        val visual = structureVisuals[s.id] ?: return 1f
+        val headTop = visual.head?.let { visual.headY + it.top * if (visual.crew) 0.5f else 1f } ?: 0f
+        return max(visual.base.top, headTop).coerceAtLeast(0.3f)
     }
 
     /** Ray vs. the structure's box (slab test). Returns the hit distance along the ray, or null. */
@@ -1266,6 +1352,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     /** Back to the default north-up view. */
     fun resetCameraRotation() {
         gameYaw = 0f
+        panVelX = 0f
+        panVelZ = 0f
     }
 
     val cameraRotated: Boolean get() = gameYaw in 3f..357f
@@ -1294,6 +1382,18 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         val sel = hud.selected ?: return
         val r = game.execute(Command.Upgrade(sel.id))
         if (r is CommandResult.Rejected) toast(r.reason, 0xFFFFB0A0) else handleEvents(game.drainEvents())
+        refreshHud()
+    }
+
+    fun specializeSelected(specialization: TowerSpecialization) {
+        val sel = hud.selected ?: return
+        val result = game.execute(Command.Specialize(sel.id, specialization))
+        if (result is CommandResult.Rejected) {
+            toast(result.reason, 0xFFFFB0A0)
+        } else {
+            hud.overlay = Overlay.NONE
+            handleEvents(game.drainEvents())
+        }
         refreshHud()
     }
 

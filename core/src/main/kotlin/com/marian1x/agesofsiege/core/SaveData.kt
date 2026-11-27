@@ -12,6 +12,7 @@ data class SavedStructure(
     val xp: Int,
     val kills: Int,
     val invested: Cost = Cost(),
+    val specialization: TowerSpecialization? = null,
 )
 
 /** A soldier's persistent state (at home, or travelling with an expedition). */

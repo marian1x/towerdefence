@@ -72,17 +72,17 @@ fun WorldMapScreen(c: GameController) {
         RealmLabels(c)
         Row(Modifier.fillMaxSize().safeDrawingPadding()) {
             Box(Modifier.weight(1f).fillMaxHeight().padding(10.dp)) {
-                Row(Modifier.align(Alignment.TopStart), verticalAlignment = Alignment.CenterVertically) {
-                    MenuButton("← BASE") { c.openBase() }
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        "THE REALM", fontFamily = GameFont, fontSize = 22.sp, color = Gold,
-                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(PanelBg).padding(horizontal = 12.dp, vertical = 4.dp),
-                    )
-                    if (c.cameraRotated) {
-                        Spacer(Modifier.width(8.dp))
-                        RoundButton("N", onClick = c::resetCameraRotation)
+                Column(Modifier.align(Alignment.TopStart)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MenuButton("← BASE") { c.openBase() }
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "THE REALM", fontFamily = GameFont, fontSize = 22.sp, color = Gold,
+                            modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(PanelBg).padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
                     }
+                    Spacer(Modifier.height(6.dp))
+                    CameraControls(c)
                 }
                 Text(
                     "Tap a region · drag to move · pinch in over your castle to return",

@@ -27,10 +27,18 @@ class Structure(
     /** Seconds since last shot – lets the renderer animate recoil. */
     var sinceShot = 99f
     var invested = Cost()
+    var specialization: TowerSpecialization? = null
+        internal set
     val rank get() = Content.rankFor(xp)
     val cx get() = x + w / 2f
     val cy get() = y + h / 2f
     val towerDef get() = Content.tower(defId)
+    val towerDamage get() = towerDef.damage * Content.levelDamageMult(level) * Content.rankDamageMult(rank) *
+        (specialization?.damageMultiplier ?: 1f)
+    val towerRange get() = towerDef.range + Content.levelRangeBonus(level) + Content.rankRangeBonus(rank) +
+        (specialization?.rangeBonus ?: 0f)
+    val towerFireRate get() = towerDef.fireRate * Content.levelRateMult(level) *
+        (specialization?.fireRateMultiplier ?: 1f)
 }
 
 class Enemy(
@@ -92,6 +100,7 @@ class Projectile(
     var tx: Float,
     var ty: Float,
     val speed: Float,
+    val chillSeconds: Float = 0f,
 ) {
     var prevX = x
     var prevY = y
@@ -109,7 +118,9 @@ enum class Phase { PREP, ACTIVE }
 
 sealed class GameEvent {
     data class Shot(val structureId: Int, val visual: String) : GameEvent()
-    data class Hit(val x: Float, val y: Float, val damage: Int, val type: DamageType, val splash: Float) : GameEvent()
+    data class Hit(
+        val x: Float, val y: Float, val damage: Int, val type: DamageType, val splash: Float, val visual: String = "",
+    ) : GameEvent()
     data class EnemyDied(val enemyId: Int, val defId: String, val x: Float, val y: Float, val bounty: Int) : GameEvent()
     data class RankUp(val structureId: Int, val rank: Int) : GameEvent()
     data class WaveStarted(val wave: Int) : GameEvent()
@@ -121,6 +132,7 @@ sealed class GameEvent {
     data class Built(val structureId: Int) : GameEvent()
     data class Removed(val structureId: Int) : GameEvent()
     data class Upgraded(val structureId: Int, val level: Int) : GameEvent()
+    data class Specialized(val structureId: Int, val specialization: TowerSpecialization) : GameEvent()
     data class TroopRecruited(val troopId: Int) : GameEvent()
     data class TroopDied(val troopId: Int, val defId: String, val x: Float, val y: Float) : GameEvent()
     /** Narrative message for the player (expeditions, rival news...). */
@@ -135,6 +147,7 @@ sealed class GameEvent {
 sealed class Command {
     data class Place(val defId: String, val x: Int, val y: Int) : Command()
     data class Upgrade(val structureId: Int) : Command()
+    data class Specialize(val structureId: Int, val specialization: TowerSpecialization) : Command()
     data class Sell(val structureId: Int) : Command()
     object StartWave : Command()
     data class CastVolley(val x: Float, val y: Float) : Command()
@@ -357,6 +370,23 @@ class BaseGame(val seed: Long = 1234L) {
                 }
             }
         }
+        is Command.Specialize -> {
+            val s = structures[cmd.structureId]
+            val cost = Content.specializationCost
+            when {
+                s == null || s.kind != StructureKind.TOWER -> CommandResult.Rejected("Select a tower first")
+                s.level < Content.SPECIALIZATION_LEVEL -> CommandResult.Rejected("Upgrade this tower to level ${Content.SPECIALIZATION_LEVEL} first")
+                s.specialization != null -> CommandResult.Rejected("This tower already has a specialization")
+                !res.canAfford(cost) -> CommandResult.Rejected("Not enough resources")
+                else -> {
+                    res.pay(cost)
+                    s.invested += cost
+                    s.specialization = cmd.specialization
+                    events += GameEvent.Specialized(s.id, cmd.specialization)
+                    CommandResult.Ok
+                }
+            }
+        }
         is Command.Sell -> {
             val s = structures[cmd.structureId]
             if (s == null || s.kind == StructureKind.KEEP) CommandResult.Rejected("Can't sell that") else {
@@ -536,6 +566,8 @@ class BaseGame(val seed: Long = 1234L) {
             if (!e.alive) continue
             e.prevX = e.x
             e.prevY = e.y
+            val speedMultiplier = if (e.slowTimer > 0f) Content.CHILLED_SPEED_MULTIPLIER else 1f
+            e.slowTimer = (e.slowTimer - DT).coerceAtLeast(0f)
             // Blocked by a soldier: stop and fight.
             val foe = troops.firstOrNull { it.alive && dist(it.x, it.y, e.x, e.y) < 0.7f }
             if (foe != null) {
@@ -584,7 +616,7 @@ class BaseGame(val seed: Long = 1234L) {
                     best = ni
                 }
             }
-            val speed = e.def.speed * DT
+            val speed = e.def.speed * speedMultiplier * DT
             var targetX: Float
             var targetY: Float
             if (best < 0) {
@@ -722,7 +754,7 @@ class BaseGame(val seed: Long = 1234L) {
             val def = s.towerDef
             s.sinceShot += DT
             if (s.cooldown > 0f) s.cooldown -= DT
-            val range = def.range + Content.levelRangeBonus(s.level) + Content.rankRangeBonus(s.rank)
+            val range = s.towerRange
             // Target the raider closest to the Keep.
             var target: Enemy? = null
             var targetScore = Int.MAX_VALUE
@@ -739,16 +771,15 @@ class BaseGame(val seed: Long = 1234L) {
             if (target == null) continue
             s.aim = atan2(target.x - s.cx, target.y - s.cy)
             if (s.cooldown > 0f) continue
-            s.cooldown = 1f / (def.fireRate * Content.levelRateMult(s.level))
+            s.cooldown = 1f / s.towerFireRate
             s.sinceShot = 0f
-            val dmg = def.damage * Content.levelDamageMult(s.level) * Content.rankDamageMult(s.rank)
             // Artillery leads its target a little.
             val lead = if (def.homing) 0f else dist(s.cx, s.cy, target.x, target.y) / def.projectileSpeed
             val tx = target.x + (target.x - target.prevX) / DT * lead * 0.8f
             val ty = target.y + (target.y - target.prevY) / DT * lead * 0.8f
             projectiles += Projectile(
-                nextId++, s.id, def.id, def.damageType, dmg, def.splash, def.homing, target.id,
-                s.cx, s.cy, tx, ty, def.projectileSpeed,
+                nextId++, s.id, def.id, def.damageType, s.towerDamage, def.splash, def.homing, target.id,
+                s.cx, s.cy, tx, ty, def.projectileSpeed, def.chillSeconds,
             )
             events += GameEvent.Shot(s.id, def.id)
         }
@@ -788,12 +819,16 @@ class BaseGame(val seed: Long = 1234L) {
         val owner = structures[p.ownerId]
         val troopOwner = if (owner == null) troops.firstOrNull { it.id == p.ownerId } else null
         if (p.splash > 0f) {
-            for (e in enemies) if (e.alive && dist(e.x, e.y, p.x, p.y) <= p.splash) damage(e, p.damage, p.type, owner)
-            events += GameEvent.Hit(p.x, p.y, p.damage.toInt(), p.type, p.splash)
+            for (e in enemies) if (e.alive && dist(e.x, e.y, p.x, p.y) <= p.splash) {
+                e.slowTimer = max(e.slowTimer, p.chillSeconds)
+                damage(e, p.damage, p.type, owner)
+            }
+            events += GameEvent.Hit(p.x, p.y, p.damage.toInt(), p.type, p.splash, p.visual)
         } else {
             val t = enemies.firstOrNull { it.id == p.targetId && it.alive } ?: return
+            t.slowTimer = max(t.slowTimer, p.chillSeconds)
             val dealt = damage(t, p.damage, p.type, owner, troopOwner)
-            events += GameEvent.Hit(t.x, t.y, dealt, p.type, 0f)
+            events += GameEvent.Hit(t.x, t.y, dealt, p.type, 0f, p.visual)
         }
     }
 
@@ -848,7 +883,7 @@ class BaseGame(val seed: Long = 1234L) {
         gold = res.gold, wood = res.wood, stone = res.stone,
         wave = wave, bestWave = bestWave,
         structures = structures.values.filter { it.kind != StructureKind.KEEP }.map {
-            SavedStructure(it.defId, it.x, it.y, it.level, it.xp, it.kills, it.invested)
+            SavedStructure(it.defId, it.x, it.y, it.level, it.xp, it.kills, it.invested, it.specialization)
         },
         troops = troops.map { it.toData() },
     )
@@ -863,7 +898,7 @@ class BaseGame(val seed: Long = 1234L) {
         bestWave = save.bestWave
         for (ss in save.structures) {
             val i = idx(ss.x, ss.y)
-            if (!inBounds(ss.x, ss.y) || blocked[i]) continue
+            if (!inBounds(ss.x, ss.y) || blocked[i] || (!Content.isBuilding(ss.defId) && !Content.isTower(ss.defId))) continue
             val kind = when {
                 Content.isBuilding(ss.defId) -> StructureKind.BUILDING
                 Content.tower(ss.defId).isWall -> StructureKind.WALL
@@ -874,6 +909,7 @@ class BaseGame(val seed: Long = 1234L) {
             s.xp = ss.xp
             s.kills = ss.kills
             s.invested = ss.invested
+            s.specialization = ss.specialization
             addStructure(s)
         }
         returnTroops(save.troops)

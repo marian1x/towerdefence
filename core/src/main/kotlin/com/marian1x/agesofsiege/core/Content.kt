@@ -16,6 +16,19 @@ data class Cost(val gold: Int = 0, val wood: Int = 0, val stone: Int = 0) {
 enum class DamageType { PIERCE, ANTI_ARMOR, EXPLOSIVE }
 enum class Armor { LIGHT, HEAVY }
 
+@Serializable
+enum class TowerSpecialization(
+    val label: String,
+    val benefit: String,
+    val damageMultiplier: Float = 1f,
+    val rangeBonus: Float = 0f,
+    val fireRateMultiplier: Float = 1f,
+) {
+    POWER("Power", "+25% damage per hit", damageMultiplier = 1.25f),
+    REACH("Reach", "+0.9 tiles of range", rangeBonus = 0.9f),
+    RAPID("Rapid Fire", "+25% attack speed", fireRateMultiplier = 1.25f),
+}
+
 data class TowerDef(
     val id: String,
     val name: String,
@@ -32,6 +45,7 @@ data class TowerDef(
     val homing: Boolean = true,
     val upgradeCosts: List<Cost> = emptyList(),
     val isWall: Boolean = false,
+    val chillSeconds: Float = 0f,
 )
 
 data class EnemyDef(
@@ -94,7 +108,7 @@ object Content {
             cost = Cost(gold = 50, wood = 25),
             damage = 8f, range = 3.3f, fireRate = 1.3f, damageType = DamageType.PIERCE,
             projectileSpeed = 12f,
-            upgradeCosts = listOf(Cost(60, 30, 0), Cost(110, 40, 25)),
+            upgradeCosts = listOf(Cost(60, 30, 0), Cost(110, 40, 25), Cost(175, 65, 45), Cost(260, 90, 70)),
         ),
         TowerDef(
             id = "ballista", name = "Ballista",
@@ -102,7 +116,7 @@ object Content {
             cost = Cost(gold = 90, wood = 40, stone = 10),
             damage = 40f, range = 4.3f, fireRate = 0.5f, damageType = DamageType.ANTI_ARMOR,
             projectileSpeed = 15f,
-            upgradeCosts = listOf(Cost(90, 40, 20), Cost(160, 50, 50)),
+            upgradeCosts = listOf(Cost(90, 40, 20), Cost(160, 50, 50), Cost(235, 80, 80), Cost(330, 110, 120)),
         ),
         TowerDef(
             id = "catapult", name = "Catapult",
@@ -110,7 +124,31 @@ object Content {
             cost = Cost(gold = 120, wood = 30, stone = 40),
             damage = 22f, range = 5.2f, fireRate = 0.33f, damageType = DamageType.EXPLOSIVE,
             splash = 1.35f, projectileSpeed = 6.5f, homing = false,
-            upgradeCosts = listOf(Cost(120, 30, 50), Cost(200, 40, 90)),
+            upgradeCosts = listOf(Cost(120, 30, 50), Cost(200, 40, 90), Cost(275, 60, 130), Cost(365, 90, 180)),
+        ),
+        TowerDef(
+            id = "frost", name = "Frost Spire",
+            description = "Chills nearby raiders, slowing their movement by 40%.",
+            cost = Cost(gold = 75, wood = 30, stone = 20),
+            damage = 7f, range = 3.5f, fireRate = 0.8f, damageType = DamageType.EXPLOSIVE,
+            splash = 0.8f, projectileSpeed = 9f, chillSeconds = 1.9f,
+            upgradeCosts = listOf(Cost(75, 35, 25), Cost(135, 50, 45), Cost(205, 75, 70), Cost(300, 100, 105)),
+        ),
+        TowerDef(
+            id = "brazier", name = "Flame Brazier",
+            description = "Short-range fire splashes across groups of raiders.",
+            cost = Cost(gold = 105, wood = 25, stone = 30),
+            damage = 15f, range = 2.65f, fireRate = 0.9f, damageType = DamageType.EXPLOSIVE,
+            splash = 1.05f, projectileSpeed = 10f,
+            upgradeCosts = listOf(Cost(100, 35, 35), Cost(165, 50, 60), Cost(235, 65, 95), Cost(330, 90, 135)),
+        ),
+        TowerDef(
+            id = "repeater", name = "Repeater",
+            description = "A rapid volley of steel bolts against armored enemies.",
+            cost = Cost(gold = 115, wood = 55, stone = 15),
+            damage = 13f, range = 3.15f, fireRate = 1.55f, damageType = DamageType.ANTI_ARMOR,
+            projectileSpeed = 16f,
+            upgradeCosts = listOf(Cost(105, 50, 20), Cost(170, 70, 40), Cost(245, 95, 65), Cost(340, 125, 95)),
         ),
         TowerDef(
             id = "wall", name = "Stone Wall",
@@ -189,6 +227,9 @@ object Content {
     const val VOLLEY_RADIUS = 1.8f
     const val VOLLEY_DELAY = 0.7f
     const val SELL_REFUND = 0.6f
+    const val CHILLED_SPEED_MULTIPLIER = 0.6f
+    const val SPECIALIZATION_LEVEL = 3
+    val specializationCost = Cost(gold = 75, wood = 25, stone = 20)
     val startResources = Cost(gold = 170, wood = 90, stone = 40)
 
     private val towerMap = towers.associateBy { it.id }

@@ -34,6 +34,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +69,7 @@ import com.marian1x.agesofsiege.core.Content
 import com.marian1x.agesofsiege.core.Cost
 import com.marian1x.agesofsiege.core.Phase
 import com.marian1x.agesofsiege.core.StructureKind
+import com.marian1x.agesofsiege.core.TowerSpecialization
 import com.marian1x.agesofsiege.game.GameController
 import com.marian1x.agesofsiege.game.InputMode
 import com.marian1x.agesofsiege.game.SelectedInfo
@@ -127,6 +132,7 @@ fun GameScreen(c: GameController) {
             Overlay.CONFIRM_RESTART -> ConfirmRestart(c)
             Overlay.ARMY -> ArmyPanel(c)
             Overlay.MULTIPLAYER -> MultiplayerPanel(c)
+            Overlay.SPECIALIZATION -> hud.selected?.let { SpecializationDialog(c, it) }
             Overlay.NONE -> Unit
         }
         if (hud.screen != Screen.MENU) {
@@ -183,6 +189,11 @@ private fun WorldOverlay(c: GameController) {
             val f = (e.hp / e.maxHp).coerceIn(0f, 1f)
             val col = if (f > 0.5f) Color(0xFF6EE06A) else if (f > 0.25f) Color(0xFFFFC94D) else Danger
             drawRoundRect(col, Offset(left, pos[1]), Size(w * f, barH), CornerRadius(2f))
+            if (e.slowTimer > 0f) {
+                val marker = Offset(left - barH, pos[1] + barH * 0.5f)
+                drawCircle(Color(0xCC092031), barH * 0.72f, marker)
+                drawCircle(Color(0xFFA0EAFF), barH * 0.44f, marker)
+            }
         }
         // Veterancy pips above towers.
         for (s in g.structures.values) {
@@ -242,10 +253,8 @@ private fun Hud(c: GameController) {
                 }
                 RoundButton("☰", onClick = { hud.overlay = Overlay.PAUSE })
             }
-            if (c.cameraRotated) {
-                Spacer(Modifier.height(6.dp))
-                RoundButton("N", onClick = c::resetCameraRotation)
-            }
+            Spacer(Modifier.height(6.dp))
+            CameraControls(c)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NavButton("ARMY ${hud.garrison.values.sum() + hud.away}/${hud.armyCap}") { hud.overlay = Overlay.ARMY }
@@ -256,20 +265,21 @@ private fun Hud(c: GameController) {
                 NavButton("⬆ UPDATE") { hud.overlay = Overlay.SETTINGS }
             }
         }
-        // Mode hint.
-        val mode = hud.mode
-        if (mode !is InputMode.Normal) {
-            val text = when (mode) {
-                is InputMode.Build -> "Tap tiles to build ${nameOf(mode.defId)} · tap the card again to stop"
-                else -> "Tap the battlefield to fire an Arrow Volley"
+        Column(Modifier.align(Alignment.BottomStart), horizontalAlignment = Alignment.CenterHorizontally) {
+            val mode = hud.mode
+            if (mode !is InputMode.Normal) {
+                val text = when (mode) {
+                    is InputMode.Build -> "Tap a tile to build ${nameOf(mode.defId)}"
+                    else -> "Tap the battlefield to fire an Arrow Volley"
+                }
+                Text(
+                    text, color = Color.White, fontSize = 13.sp,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                        .clip(RoundedCornerShape(10.dp)).background(Color(0xD0101420)).padding(horizontal = 12.dp, vertical = 5.dp),
+                )
             }
-            Text(
-                text, color = Color.White, fontSize = 13.sp,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 104.dp)
-                    .clip(RoundedCornerShape(10.dp)).background(Color(0xB0101420)).padding(horizontal = 12.dp, vertical = 5.dp),
-            )
+            BuildBar(c, Modifier)
         }
-        BuildBar(c, Modifier.align(Alignment.BottomStart))
         VolleyButton(c, Modifier.align(Alignment.BottomEnd))
         AnimatedVisibility(
             visible = hud.selected != null,
@@ -393,33 +403,79 @@ private fun WaveBanner(c: GameController, modifier: Modifier) {
 }
 
 @Composable
-internal fun RoundButton(label: String, onClick: () -> Unit, highlight: Boolean = false) {
+internal fun RoundButton(
+    label: String,
+    onClick: () -> Unit,
+    highlight: Boolean = false,
+    actionLabel: String? = null,
+) {
     Box(
         Modifier.size(42.dp).clip(CircleShape)
             .background(if (highlight) Gold else PanelBg)
             .border(1.dp, PanelBorder, CircleShape)
-            .clickable(onClick = onClick),
+            .clickable(onClickLabel = actionLabel, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(label, color = if (highlight) Color(0xFF1A1F2B) else Color.White, fontFamily = GameFont, fontSize = 16.sp)
     }
 }
 
-private val buildOptions = listOf("archer", "ballista", "catapult", "wall", "barracks", "house", "lumber", "quarry")
+@Composable
+internal fun CameraControls(c: GameController) {
+    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        RoundButton("↶", onClick = { c.onRotate(45f) }, actionLabel = "Rotate view left")
+        RoundButton("N", onClick = c::resetCameraRotation, highlight = !c.cameraRotated, actionLabel = "Reset view to north")
+        RoundButton("↷", onClick = { c.onRotate(-45f) }, actionLabel = "Rotate view right")
+    }
+}
+
+private val defenseCards = Content.towers.map { it.id }
+private val townCards = listOf("barracks", "house", "lumber", "quarry")
 
 @Composable
 private fun BuildBar(c: GameController, modifier: Modifier) {
     val hud = c.hud
+    var town by remember { mutableStateOf(false) }
     Row(
-        modifier.padding(end = 92.dp).horizontalScroll(rememberScrollState()),
+        modifier.padding(end = 92.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        for (id in buildOptions) {
-            val cost = if (Content.isTower(id)) Content.tower(id).cost else Content.building(id).cost
-            val selected = (hud.mode as? InputMode.Build)?.defId == id
-            val affordable = hud.gold >= cost.gold && hud.wood >= cost.wood && hud.stone >= cost.stone
-            BuildCard(id, cost, selected, affordable) { c.selectBuild(id) }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            BuildCategory("Defense", !town) {
+                if (town && hud.mode is InputMode.Build) c.selectBuild(null)
+                town = false
+            }
+            BuildCategory("Town", town) {
+                if (!town && hud.mode is InputMode.Build) c.selectBuild(null)
+                town = true
+            }
         }
+        key(town) {
+            Row(
+                Modifier.weight(1f, fill = false).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (id in if (town) townCards else defenseCards) {
+                    val cost = if (town) Content.building(id).cost else Content.tower(id).cost
+                    val selected = (hud.mode as? InputMode.Build)?.defId == id
+                    val affordable = hud.gold >= cost.gold && hud.wood >= cost.wood && hud.stone >= cost.stone
+                    BuildCard(id, cost, selected, affordable) { c.selectBuild(id) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BuildCategory(label: String, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        Modifier.width(68.dp).clip(shape).background(if (selected) Gold else PanelBg)
+            .border(1.dp, PanelBorder, shape).clickable(onClick = onClick).padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (selected) Color(0xFF211B13) else Color.White, fontFamily = GameFont, fontSize = 13.sp)
     }
 }
 
@@ -439,6 +495,18 @@ private fun BuildCard(id: String, cost: Cost, selected: Boolean, affordable: Boo
             nameOf(id).replace(" Tower", "").replace("Stone ", ""),
             color = if (affordable) Color.White else TextDim, fontSize = 13.sp, fontFamily = GameFont, maxLines = 1,
         )
+        val role = when (id) {
+            "archer" -> "Light infantry"
+            "ballista", "repeater" -> "Anti-armor"
+            "catapult", "brazier" -> "Area damage"
+            "frost" -> "Slows raiders"
+            "wall" -> "Blocks paths"
+            "barracks" -> "Train troops"
+            "house" -> "Gold income"
+            "lumber" -> "Wood income"
+            else -> "Stone income"
+        }
+        Text(role, color = TextDim, fontSize = 9.sp, maxLines = 1)
         CostRow(cost, affordable)
     }
 }
@@ -456,6 +524,10 @@ internal fun CostRow(cost: Cost, affordable: Boolean, fontSize: Int = 10) {
 /** Build-card icons rendered from the real 3D models by tools/blender/render_previews.py. */
 @Composable
 private fun BuildIcon(id: String, modifier: Modifier) {
+    if (id == "frost" || id == "brazier" || id == "repeater") {
+        NewTowerIcon(id, modifier)
+        return
+    }
     val res = when (id) {
         "archer" -> R.drawable.ic_build_archer
         "ballista" -> R.drawable.ic_build_ballista
@@ -525,6 +597,13 @@ private fun SelectionPanel(c: GameController, s: SelectedInfo) {
                     Box(Modifier.fillMaxHeight().fillMaxWidth(f.coerceIn(0f, 1f)).background(Gold))
                 }
                 Text(if (next == null) "Max veterancy" else "${s.xp}/$next XP", color = TextDim, fontSize = 10.sp)
+                val specialization = s.specialization
+                if (specialization != null) {
+                    Text("${specialization.label} · ${specialization.benefit}", color = Gold, fontSize = 11.sp)
+                } else if (s.level >= Content.SPECIALIZATION_LEVEL) {
+                    Spacer(Modifier.height(5.dp))
+                    NavButton("SPECIALIZE") { c.hud.overlay = Overlay.SPECIALIZATION }
+                }
             }
             if (s.kind != StructureKind.KEEP) {
                 Spacer(Modifier.height(10.dp))
@@ -533,10 +612,28 @@ private fun SelectionPanel(c: GameController, s: SelectedInfo) {
                     if (up != null) {
                         val hud = c.hud
                         val ok = hud.gold >= up.gold && hud.wood >= up.wood && hud.stone >= up.stone
-                        ActionButton("UPGRADE", up, ok, Color(0xFF2E7D4F), Modifier.weight(1f)) { c.upgradeSelected() }
+                        ActionButton("LEVEL ${s.level + 1}", up, ok, Color(0xFF2E7D4F), Modifier.weight(1f)) { c.upgradeSelected() }
                     }
                     ActionButton("SELL", s.refund, true, Color(0xFF7D2E2E), Modifier.weight(1f)) { c.sellSelected() }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpecializationDialog(c: GameController, s: SelectedInfo) {
+    val cost = Content.specializationCost
+    val hud = c.hud
+    val affordable = hud.gold >= cost.gold && hud.wood >= cost.wood && hud.stone >= cost.stone
+    GameDialog("Specialize ${s.name}", onClose = { hud.overlay = Overlay.NONE }) {
+        Text("Choose one permanent upgrade.", color = TextDim, fontSize = 13.sp)
+        Spacer(Modifier.height(4.dp))
+        CostRow(cost, affordable, fontSize = 13)
+        for (choice in TowerSpecialization.entries) {
+            Spacer(Modifier.height(9.dp))
+            MenuButton("${choice.label} · ${choice.benefit}", Modifier.fillMaxWidth(), enabled = affordable) {
+                c.specializeSelected(choice)
             }
         }
     }
@@ -547,12 +644,12 @@ private fun ActionButton(label: String, cost: Cost, enabled: Boolean, color: Col
     Column(
         modifier.clip(RoundedCornerShape(10.dp))
             .background(if (enabled) color else color.copy(alpha = 0.4f))
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-        CostRow(cost, true)
+        CostRow(cost, enabled)
     }
 }
 

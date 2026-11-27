@@ -80,6 +80,54 @@ class BaseGameTest {
     }
 
     @Test
+    fun towerLevelsAndSpecializationSurviveSaveAndLoad() {
+        val g = BaseGame(99)
+        g.res.add(Cost(2_000, 1_000, 1_000))
+        assertEquals(CommandResult.Ok, g.execute(Command.Place("frost", 5, 5)))
+        val tower = checkNotNull(g.structureAt(5, 5))
+        val reach = Command.Specialize(tower.id, TowerSpecialization.REACH)
+        assertTrue(g.execute(reach) is CommandResult.Rejected)
+
+        repeat(2) { assertEquals(CommandResult.Ok, g.execute(Command.Upgrade(tower.id))) }
+        val baseRange = tower.towerRange
+        val goldBefore = g.res.gold
+        assertEquals(CommandResult.Ok, g.execute(reach))
+        assertEquals(baseRange + 0.9f, tower.towerRange, 0.001f)
+        assertEquals(goldBefore - Content.specializationCost.gold, g.res.gold, 0.001f)
+        assertTrue(g.execute(Command.Specialize(tower.id, TowerSpecialization.POWER)) is CommandResult.Rejected)
+
+        repeat(2) { assertEquals(CommandResult.Ok, g.execute(Command.Upgrade(tower.id))) }
+        assertTrue(g.execute(Command.Upgrade(tower.id)) is CommandResult.Rejected)
+        val loaded = BaseGame(99).also { it.loadFrom(SaveData.fromJson(g.toSave().toJson())) }
+        val restored = checkNotNull(loaded.structureAt(5, 5))
+        assertEquals(5, restored.level)
+        assertEquals(TowerSpecialization.REACH, restored.specialization)
+        assertEquals(tower.towerRange, restored.towerRange, 0.001f)
+        assertEquals(tower.invested, restored.invested)
+    }
+
+    @Test
+    fun frostSlowsRaidersOnImpact() {
+        val g = BaseGame(99)
+        assertEquals(CommandResult.Ok, g.execute(Command.Place("frost", 1, 3)))
+        val raider = Content.enemy("raider")
+        val enemy = Enemy(900, raider, 0.5f, 3.5f, raider.hp, 0f)
+        g.enemies += enemy
+
+        runSeconds(g, 0.6f)
+        assertTrue(enemy.slowTimer > 0f)
+        assertTrue(enemy.hp < enemy.maxHp)
+        val previousX = enemy.x
+        val previousY = enemy.y
+        g.step()
+        assertEquals(
+            raider.speed * Content.CHILLED_SPEED_MULTIPLIER * BaseGame.DT,
+            dist(previousX, previousY, enemy.x, enemy.y),
+            0.001f,
+        )
+    }
+
+    @Test
     fun simulationIsDeterministic() {
         fun play(): String {
             val g = BaseGame(5)

@@ -12,7 +12,9 @@ base, and (soon) explore the world and race rival AI lords through the ages.
 **How to play:** pick a card at the bottom and tap tiles to build. Raiders walk from the gates on the left (and the top
 from wave 6) to your Keep — use towers and walls to stop them, but always leave a path. Tap a tower to upgrade or sell it.
 Towers gain veterancy ranks from kills. Use **Volley** for emergencies and **Call now** to start a wave early for bonus gold.
-Drag to pan, pinch to zoom.
+Drag to pan, pinch to zoom, and twist with two fingers or use the arrow buttons to rotate. **N** resets the view
+to north. The **Defense** tab includes the Frost Spire, Flame Brazier, and Repeater. Attack towers upgrade to
+level 5. At level 3, choose one permanent specialization for damage, range, or fire rate.
 
 ## Play with a friend
 
