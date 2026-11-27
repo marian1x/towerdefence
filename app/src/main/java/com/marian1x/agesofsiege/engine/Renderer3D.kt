@@ -49,6 +49,10 @@ class Renderer3D(context: Context) {
     val engine: Engine
     val renderer: Renderer
     val scene: Scene
+    /** Second scene for the zoomed-out 3D realm (same sky, its own sun with far-reaching shadows). */
+    val realmScene: Scene
+    var showingRealm = false
+        private set
     val view: View
     val camera: Camera
     private val cameraEntity: Int
@@ -65,6 +69,7 @@ class Renderer3D(context: Context) {
     val defaultLit: MaterialInstance
 
     private val sunEntity: Int
+    private val realmSunEntity: Int
     private val entities = HashSet<Int>()
     private val meshes = ArrayList<Mesh>()
 
@@ -91,6 +96,7 @@ class Renderer3D(context: Context) {
         engine = Engine.Builder().backend(Engine.Backend.OPENGL).build()
         renderer = engine.createRenderer()
         scene = engine.createScene()
+        realmScene = engine.createScene()
         view = engine.createView()
         cameraEntity = EntityManager.get().create()
         camera = engine.createCamera(cameraEntity)
@@ -116,6 +122,8 @@ class Renderer3D(context: Context) {
                 .intensity(32_000f)
                 .build(engine)
         }
+        realmScene.skybox = scene.skybox
+        realmScene.indirectLight = scene.indirectLight
 
         // Warm sun with soft shadows.
         sunEntity = EntityManager.get().create()
@@ -135,6 +143,24 @@ class Renderer3D(context: Context) {
             })
             .build(engine, sunEntity)
         scene.addEntity(sunEntity)
+
+        realmSunEntity = EntityManager.get().create()
+        LightManager.Builder(LightManager.Type.SUN)
+            .color(1.0f, 0.93f, 0.82f)
+            .intensity(115_000f)
+            .direction(0.5f, -0.9f, -0.45f)
+            .sunAngularRadius(1.9f)
+            .castShadows(true)
+            .shadowOptions(LightManager.ShadowOptions().apply {
+                mapSize = 2048
+                shadowCascades = 2
+                stable = false
+                constantBias = 0.004f
+                normalBias = 0.8f
+                shadowFar = 140f
+            })
+            .build(engine, realmSunEntity)
+        realmScene.addEntity(realmSunEntity)
 
         camera.setExposure(16f, 1f / 125f, 100f)
 
@@ -407,8 +433,23 @@ class Renderer3D(context: Context) {
         return ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).put(bytes).also { it.flip() }
     }
 
+    /** Switches what the camera looks at: the base diorama or the 3D realm. */
+    fun showRealm(realm: Boolean) {
+        showingRealm = realm
+        view.scene = if (realm) realmScene else scene
+    }
+
+    /** Frees a mesh that is no longer used by any renderable (e.g. rebuilt fog). */
+    fun destroyMesh(m: Mesh) {
+        if (meshes.remove(m)) {
+            engine.destroyVertexBuffer(m.vb)
+            engine.destroyIndexBuffer(m.ib)
+        }
+    }
+
     fun destroyEntity(e: Int) {
         scene.remove(e)
+        realmScene.remove(e)
         engine.destroyEntity(e)
         EntityManager.get().destroy(e)
         entities -= e
@@ -436,7 +477,7 @@ class Renderer3D(context: Context) {
             0.0, 1.0, 0.0,
         )
         val aspect = width.toDouble() / height.coerceAtLeast(1)
-        camera.setProjection(fovDeg, aspect, 1.0, 140.0, Camera.Fov.VERTICAL)
+        camera.setProjection(fovDeg, aspect, 1.0, 320.0, Camera.Fov.VERTICAL)
     }
 
     private fun basis(): Array<FloatArray> {
@@ -451,20 +492,29 @@ class Renderer3D(context: Context) {
         return arrayOf(e, floatArrayOf(fx, fy, fz), floatArrayOf(rx, ry, rz), floatArrayOf(ux, uy, uz))
     }
 
-    /** Screen pixel -> point on the ground plane (y = planeY). */
-    fun screenToGround(sx: Float, sy: Float, planeY: Float = 0f): FloatArray? {
+    /** Screen pixel -> world ray: [ox, oy, oz, dx, dy, dz] (direction not normalized). */
+    fun screenRay(sx: Float, sy: Float): FloatArray {
         val (e, f, r, u) = basis()
         val tanHalf = tan(Math.toRadians(fovDeg / 2)).toFloat()
         val aspect = width.toFloat() / height.coerceAtLeast(1)
         val nx = 2f * sx / width - 1f
         val ny = 1f - 2f * sy / height
-        val dx = f[0] + r[0] * nx * tanHalf * aspect + u[0] * ny * tanHalf
-        val dy = f[1] + r[1] * nx * tanHalf * aspect + u[1] * ny * tanHalf
-        val dz = f[2] + r[2] * nx * tanHalf * aspect + u[2] * ny * tanHalf
+        return floatArrayOf(
+            e[0], e[1], e[2],
+            f[0] + r[0] * nx * tanHalf * aspect + u[0] * ny * tanHalf,
+            f[1] + r[1] * nx * tanHalf * aspect + u[1] * ny * tanHalf,
+            f[2] + r[2] * nx * tanHalf * aspect + u[2] * ny * tanHalf,
+        )
+    }
+
+    /** Screen pixel -> point on the ground plane (y = planeY). */
+    fun screenToGround(sx: Float, sy: Float, planeY: Float = 0f): FloatArray? {
+        val ray = screenRay(sx, sy)
+        val dy = ray[4]
         if (abs(dy) < 1e-5f) return null
-        val t = (planeY - e[1]) / dy
+        val t = (planeY - ray[1]) / dy
         if (t < 0) return null
-        return floatArrayOf(e[0] + dx * t, planeY, e[2] + dz * t)
+        return floatArrayOf(ray[0] + ray[3] * t, planeY, ray[2] + ray[5] * t)
     }
 
     /** World point -> screen pixel; null if behind the camera. */
@@ -507,6 +557,9 @@ class Renderer3D(context: Context) {
         }
         engine.destroyEntity(sunEntity)
         EntityManager.get().destroy(sunEntity)
+        engine.destroyEntity(realmSunEntity)
+        EntityManager.get().destroy(realmSunEntity)
+        engine.destroyScene(realmScene)
         engine.destroyRenderer(renderer)
         engine.destroyView(view)
         engine.destroyScene(scene)

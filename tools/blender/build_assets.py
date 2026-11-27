@@ -340,6 +340,51 @@ def barracks(level):
     return fn
 
 
+# ------------------------------------------------------------------ realm (3D world map) landmarks, ~1x1 footprint
+
+def realm_camp():
+    place("nature", "tent_detailedOpen", x=-0.2, z=-0.12, rot=20, scale=0.5)
+    place("nature", "tent_smallClosed", x=0.28, z=-0.25, rot=-35, scale=0.45)
+    place("nature", "tent_smallOpen", x=-0.3, z=0.3, rot=120, scale=0.4)
+    place("nature", "campfire_logs", x=0.12, z=0.18, scale=0.55)
+    place("nature", "log_stack", x=0.35, z=0.32, rot=70, scale=0.4)
+    place("td", "weapon-ammo-arrow", x=0.0, z=0.38, rot=30, scale=0.5)
+
+
+def realm_cache():
+    place("town", "cart-high", x=-0.08, z=0.02, rot=30, scale=0.42)
+    place("nature", "pot_large", x=0.3, z=-0.22, scale=0.55)
+    place("nature", "pot_small", x=0.38, z=0.08, scale=0.55)
+    place("nature", "log_stack", x=-0.32, z=-0.3, scale=0.38)
+
+
+def realm_ruins():
+    place("nature", "statue_columnDamaged", x=-0.28, z=-0.22, scale=0.55)
+    place("nature", "statue_column", x=0.26, z=-0.28, scale=0.55)
+    place("nature", "statue_columnDamaged", x=0.3, z=0.26, rot=90, scale=0.55)
+    place("nature", "statue_block", x=-0.22, z=0.28, rot=30, scale=0.55)
+    place("nature", "statue_obelisk", x=0.0, z=0.0, scale=0.5)
+    place("castle", "rocks-small", x=0.05, z=0.4, scale=0.5)
+
+
+def realm_rival_castle():
+    # A darker, square-towered fortress so the rival never looks like your own keep.
+    s = 0.6
+    for x in (-0.7, 0.7):
+        for z in (-0.7, 0.7):
+            _, h = place("castle", "tower-square-base-color", x=x, z=z, scale=s)
+            place("castle", "tower-square-top-color", x=x, y=h, z=z, scale=s)
+    for t in (-0.25, 0.25):
+        for (x, z) in ((t, 0.72), (t, -0.72), (0.72, t), (-0.72, t)):
+            place("castle", "wall", x=x, z=z, scale=0.5)
+    _, h1 = place("castle", "tower-hexagon-base", scale=0.85)
+    _, h2 = place("castle", "tower-hexagon-mid", y=h1, scale=0.85)
+    place("castle", "tower-hexagon-roof", y=h1 + h2, scale=0.85)
+    place("castle", "gate", x=0.0, z=0.95, rot=90, scale=0.75)
+    place("town", "banner-red", x=0.3, y=0.1, z=0.78, rot=-90, scale=0.6)
+    place("town", "banner-red", x=-0.3, y=0.1, z=0.78, rot=-90, scale=0.6)
+
+
 # ------------------------------------------------------------------ projectiles & props
 
 def arrow():
@@ -412,6 +457,10 @@ def main():
     build_static("arrow", arrow)
     build_static("boulder", boulder)
     build_static("selection", selection)
+    build_static("realm_camp", realm_camp)
+    build_static("realm_cache", realm_cache)
+    build_static("realm_ruins", realm_ruins)
+    build_static("realm_rival_castle", realm_rival_castle)
     character("raider", "character-raider", right="weapon-sword")
     character("brute", "character-male-b", right="weapon-sword", left="shield-round")
     character("outrider", "character-male-g", right="weapon-spear")
@@ -419,6 +468,8 @@ def main():
     character("archer_crew", "character-soldier", left="weapon-bow")
     character("swordsman", "character-soldier", right="weapon-sword", left="shield-round")
     character("rival", "character-male-f", right="weapon-sword", left="shield-rectangle")
+    character("villager", "character-worker")
+    character("villager_f", "character-female-b")
     with open(META_PATH, "w") as f:
         json.dump(meta, f, indent=1, sort_keys=True)
     print("META", META_PATH)

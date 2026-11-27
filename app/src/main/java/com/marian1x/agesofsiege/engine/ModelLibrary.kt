@@ -2,6 +2,7 @@ package com.marian1x.agesofsiege.engine
 
 import android.content.Context
 import com.google.android.filament.EntityManager
+import com.google.android.filament.Scene
 import com.google.android.filament.gltfio.Animator
 import com.google.android.filament.gltfio.AssetLoader
 import com.google.android.filament.gltfio.FilamentAsset
@@ -26,6 +27,7 @@ class Model internal constructor(
     val root: Int get() = instance.root
     val animator: Animator get() = instance.animator
     internal var inScene = false
+    internal var scene: Scene? = null
 
     fun hasAnimation(anim: String) = anim in animIndex
 
@@ -52,6 +54,7 @@ class ModelLibrary(private val r: Renderer3D, private val context: Context) {
     private val sources = HashMap<String, ByteBuffer>()
     private val free = HashMap<String, ArrayDeque<Model>>()
     private val assets = ArrayList<FilamentAsset>()
+    private val boundsByName = HashMap<String, FloatArray>()
 
     private val meta: JsonObject = context.assets.open("models/models.json").use {
         Json.parseToJsonElement(it.readBytes().decodeToString()).jsonObject
@@ -74,6 +77,12 @@ class ModelLibrary(private val r: Renderer3D, private val context: Context) {
             ?: error("Could not load model $name")
         resourceLoader.loadResources(asset)
         assets += asset
+        if (name !in boundsByName) {
+            val b = asset.boundingBox
+            val c = b.center
+            val h = b.halfExtent
+            boundsByName[name] = floatArrayOf(c[0] - h[0], c[1] - h[1], c[2] - h[2], c[0] + h[0], c[1] + h[1], c[2] + h[2])
+        }
         val rm = r.engine.renderableManager
         val queue = free.getOrPut(name) { ArrayDeque() }
         for (inst in instances) {
@@ -92,20 +101,25 @@ class ModelLibrary(private val r: Renderer3D, private val context: Context) {
         }
     }
 
-    /** Takes a model from the pool (creating a new batch if needed) and adds it to the scene. */
-    fun acquire(name: String, batch: Int = 8): Model {
+    /** Local-space bounds of a loaded model: minX, minY, minZ, maxX, maxY, maxZ (null until first loaded). */
+    fun bounds(name: String): FloatArray? = boundsByName[name]
+
+    /** Takes a model from the pool (creating a new batch if needed) and adds it to [scene]. */
+    fun acquire(name: String, batch: Int = 8, scene: Scene = r.scene): Model {
         val queue = free.getOrPut(name) { ArrayDeque() }
         if (queue.isEmpty()) grow(name, batch)
         val m = queue.removeLast()
-        r.scene.addEntities(m.instance.entities)
+        scene.addEntities(m.instance.entities)
+        m.scene = scene
         m.inScene = true
         return m
     }
 
-    /** Returns a model to the pool and removes it from the scene. */
+    /** Returns a model to the pool and removes it from its scene. */
     fun release(m: Model) {
-        if (m.inScene) r.scene.removeEntities(m.instance.entities)
+        if (m.inScene) m.scene?.removeEntities(m.instance.entities)
         m.inScene = false
+        m.scene = null
         free.getOrPut(m.name) { ArrayDeque() }.addLast(m)
     }
 

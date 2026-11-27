@@ -106,7 +106,12 @@ class HudState {
     var settings by mutableStateOf(CampaignSettings())
     var expeditionCount by mutableIntStateOf(0)
     val reports = mutableStateListOf<Pair<String, Boolean>>()
+    /** Realm cell picked in the 3D realm view. */
+    var realmSel by mutableStateOf<Pair<Int, Int>?>(null)
 }
+
+/** Where a camera looks from: orbit target, distance, pitch and yaw. One per view (base / realm). */
+private class CamRig(var x: Float, var z: Float, var dist: Float, var yaw: Float)
 
 class GameController(private val context: Context) : Choreographer.FrameCallback {
     val r3d = Renderer3D(context)
@@ -124,6 +129,14 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     private val meshCache = HashMap<String, Mesh>()
     private val fx = Fx(r3d, mesh("cube") { Models.cube(this) })
+    val realm = RealmView(r3d, models)
+    private val villagers = Villagers(r3d, models)
+    private var smokeTimer = 0f
+    private val baseRig = CamRig(14f, 8.6f, 26f, 0f)
+    private val realmRig = CamRig(0f, 0f, 44f, 0f)
+    /** Distance the camera is easing toward (rising into the realm / dropping into the base). */
+    private var zoomTo: Float? = null
+    private var zoomOverscroll = 0f
 
     // Static world: glTF ground + obstacles, procedural water.
     private val worldModels = ArrayList<Model>()
@@ -131,6 +144,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     private class StructureVisual(val base: Model, val head: Model?, val level: Int, val headY: Float, val crew: Boolean) {
         var animTime = Random.nextFloat() * 3f
+        /** 1 -> 0 after being selected: a short squash-and-stretch so the player sees what was picked. */
+        var pop = 0f
     }
 
     private class EnemyVisual(val model: Model, val def: EnemyDef) {
@@ -258,6 +273,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         hud.mode = InputMode.Normal
         hud.paused = false
         hud.reports.clear()
+        hud.realmSel = null
+        realmRig.x = 0f; realmRig.z = 0f; realmRig.dist = 44f; realmRig.yaw = 0f
         hud.toasts.clear()
         hud.overlay = Overlay.NONE
         hud.screen = Screen.GAME
@@ -369,7 +386,20 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         gridShown = false
     }
 
+    /** Lazy grey puffs rising from house roofs. */
+    private fun chimneySmoke(dt: Float) {
+        smokeTimer -= dt
+        if (smokeTimer > 0f) return
+        smokeTimer = 0.45f
+        for (s in game.structures.values) {
+            if (s.defId != "house" || Random.nextFloat() > 0.5f) continue
+            val top = models.bounds(baseModelName(s))?.get(4) ?: 1f
+            fx.burst(s.cx + 0.12f, top - 0.05f, s.cy - 0.1f, 1, 0xC9CDD2, speed = 0.12f, up = 0.35f, size = 0.11f, life = 2.6f, gravity = -0.12f, grow = true)
+        }
+    }
+
     private fun clearVisuals() {
+        villagers.clear()
         for (v in structureVisuals.values) {
             models.release(v.base)
             v.head?.let { models.release(it) }
@@ -411,13 +441,27 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         }
         val alpha = (acc / BaseGame.DT).coerceIn(0f, 1f)
         val simDt = if (!simulating) 0f else dt * hud.speed
+        syncView()
         if (hud.screen == Screen.MENU) {
             // Slow cinematic orbit behind the main menu.
             r3d.camYawDeg = (r3d.camYawDeg + dt * 4f) % 360f
-        } else if (r3d.camYawDeg != 0f) {
-            r3d.camYawDeg = 0f
+        } else {
+            zoomTo?.let { goal ->
+                r3d.camDistance += (goal - r3d.camDistance) * min(1f, dt * 4f)
+                if (kotlin.math.abs(goal - r3d.camDistance) < 0.05f) zoomTo = null
+                applyZoomPitch()
+            }
+            // Ease toward the player's chosen rotation.
+            var d = gameYaw - r3d.camYawDeg
+            while (d > 180f) d -= 360f
+            while (d < -180f) d += 360f
+            r3d.camYawDeg = (r3d.camYawDeg + d * min(1f, dt * 12f) + 360f) % 360f
+            glide(dt)
         }
 
+        if (r3d.showingRealm) realm.update(campaign, dt, hud.realmSel)
+        villagers.update(game, simDt)
+        chimneySmoke(simDt)
         syncStructures(simDt)
         syncEnemies(alpha, simDt)
         syncTroops(alpha, simDt)
@@ -644,7 +688,15 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                 selectionModel = models.acquire("selection", 1).also {
                     r3d.setTransform(it.root, sel.cx, 0.02f, sel.cy, scale = sel.w * 1.15f)
                 }
+                structureVisuals[sel.id]?.pop = 1f
             }
+        }
+        for ((id, v) in structureVisuals) {
+            if (v.pop <= 0f) continue
+            val s = game.structures[id] ?: continue
+            v.pop = max(0f, v.pop - dt * 3.5f)
+            val k = sin(v.pop * Math.PI.toFloat())
+            r3d.setTransform(v.base.root, s.cx, 0f, s.cy, scale = 1f + 0.06f * k, sy = 1f + 0.12f * k)
         }
 
         val building = hud.mode is InputMode.Build
@@ -833,6 +885,10 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     // ------------------------------------------------------------ input
 
     fun onTap(sx: Float, sy: Float) {
+        if (r3d.showingRealm) {
+            onRealmTap(sx, sy)
+            return
+        }
         val p = r3d.screenToGround(sx, sy) ?: return
         val tx = floor(p[0]).toInt()
         val ty = floor(p[2]).toInt()
@@ -864,37 +920,222 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         refreshHud()
     }
 
-    /** Picks the structure nearest to the tap, testing both ground level and tower-top height. */
+    private val density = context.resources.displayMetrics.density
+
+    /** Tap in the realm: find where the ray meets the terrain and select that region. */
+    private fun onRealmTap(sx: Float, sy: Float) {
+        var h = 0f
+        var p: FloatArray? = null
+        repeat(4) {
+            val q = r3d.screenToGround(sx, sy, h) ?: return@repeat
+            p = q
+            h = realm.heightAt(q[0], q[2])
+        }
+        val hit = p ?: return
+        val cell = realm.cellAt(hit[0], hit[2])
+        hud.realmSel = if (cell == hud.realmSel) null else cell
+    }
+
+    /**
+     * Picks the structure under the finger.
+     * 1. Exact: cast a ray from the camera and take the first building box it hits (box = footprint x model height),
+     *    so tapping the roof of a tall tower selects that tower, not the tile behind it.
+     * 2. Forgiving: if nothing was hit, take the building whose on-screen center is closest, within a finger's width.
+     *    Walls are skipped here so a near-miss never grabs a wall segment instead of the tower beside it.
+     */
     private fun pickStructure(sx: Float, sy: Float): Structure? {
+        val ray = r3d.screenRay(sx, sy)
         var best: Structure? = null
-        var bestD = Float.MAX_VALUE
-        for (h in floatArrayOf(0f, 0.6f, 1.2f)) {
-            val p = r3d.screenToGround(sx, sy, h) ?: continue
-            for (s in game.structures.values) {
-                val dx = p[0] - s.cx
-                val dz = p[2] - s.cy
-                val d = sqrt(dx * dx + dz * dz) - (s.w - 1) * 0.5f
-                if (d < 0.75f && d < bestD) {
-                    bestD = d
-                    best = s
-                }
+        var bestT = Float.MAX_VALUE
+        for (s in game.structures.values) {
+            val t = rayHitStructure(ray, s) ?: continue
+            if (t < bestT) {
+                bestT = t
+                best = s
+            }
+        }
+        if (best != null) return best
+
+        val maxPx = 28f * density
+        var bestD = maxPx * maxPx
+        val pos = FloatArray(2)
+        for (s in game.structures.values) {
+            if (s.kind == StructureKind.WALL) continue
+            if (!r3d.worldToScreen(s.cx, structureTop(s) * 0.5f, s.cy, pos)) continue
+            val dx = pos[0] - sx
+            val dy = pos[1] - sy
+            val d = dx * dx + dy * dy
+            if (d < bestD) {
+                bestD = d
+                best = s
             }
         }
         return best
     }
 
+    /** Height of a structure's clickable box: the model's top, or the crew / weapon on top of a tower. */
+    private fun structureTop(s: Structure): Float {
+        var top = models.bounds(baseModelName(s))?.get(4) ?: 1f
+        val v = structureVisuals[s.id]
+        if (v?.head != null) top = max(top, v.headY + if (v.crew) 0.55f else 0.35f)
+        return top.coerceAtLeast(0.3f)
+    }
+
+    /** Ray vs. the structure's box (slab test). Returns the hit distance along the ray, or null. */
+    private fun rayHitStructure(ray: FloatArray, s: Structure): Float? {
+        val hx = s.w * 0.5f * 0.94f
+        val hz = s.h * 0.5f * 0.94f
+        val lo = floatArrayOf(s.cx - hx, 0f, s.cy - hz)
+        val hi = floatArrayOf(s.cx + hx, structureTop(s), s.cy + hz)
+        var tMin = 0f
+        var tMax = Float.MAX_VALUE
+        for (k in 0..2) {
+            val o = ray[k]
+            val d = ray[3 + k]
+            if (kotlin.math.abs(d) < 1e-6f) {
+                if (o < lo[k] || o > hi[k]) return null
+            } else {
+                var t0 = (lo[k] - o) / d
+                var t1 = (hi[k] - o) / d
+                if (t0 > t1) { val tmp = t0; t0 = t1; t1 = tmp }
+                tMin = max(tMin, t0)
+                tMax = min(tMax, t1)
+                if (tMin > tMax) return null
+            }
+        }
+        return tMin
+    }
+
+    // Camera feel: yaw chosen by the player, pan velocity for a short glide after the finger lifts.
+    private var gameYaw by mutableFloatStateOf(0f)
+    private var panVelX = 0f
+    private var panVelZ = 0f
+    private var lastPanNanos = 0L
+
     fun onPan(centroidX: Float, centroidY: Float, dx: Float, dy: Float) {
         val a = r3d.screenToGround(centroidX, centroidY) ?: return
         val b = r3d.screenToGround(centroidX + dx, centroidY + dy) ?: return
-        r3d.camTargetX = (r3d.camTargetX - (b[0] - a[0])).coerceIn(0f, game.width.toFloat())
-        r3d.camTargetZ = (r3d.camTargetZ - (b[2] - a[2])).coerceIn(0f, game.height.toFloat())
+        val mx = -(b[0] - a[0])
+        val mz = -(b[2] - a[2])
+        moveCamera(mx, mz)
+        val now = System.nanoTime()
+        val dt = ((now - lastPanNanos) / 1e9f).coerceIn(1f / 120f, 0.1f)
+        // Smoothed velocity so a quick flick keeps gliding.
+        panVelX = panVelX * 0.5f + (mx / dt) * 0.5f
+        panVelZ = panVelZ * 0.5f + (mz / dt) * 0.5f
+        lastPanNanos = now
+    }
+
+    private fun moveCamera(mx: Float, mz: Float) {
+        val (w, h) = if (r3d.showingRealm) RealmView.widthUnits to RealmView.heightUnits else game.width.toFloat() to game.height.toFloat()
+        r3d.camTargetX = (r3d.camTargetX + mx).coerceIn(0f, w)
+        r3d.camTargetZ = (r3d.camTargetZ + mz).coerceIn(0f, h)
+    }
+
+    // ------------------------------------------------------------ base <-> realm
+
+    /** Shows the scene that matches the current screen; swaps camera rigs on change. */
+    private fun syncView() {
+        val wantRealm = hud.screen == Screen.WORLD
+        if (wantRealm == r3d.showingRealm) return
+        val from = if (r3d.showingRealm) realmRig else baseRig
+        from.x = r3d.camTargetX; from.z = r3d.camTargetZ; from.dist = zoomTo ?: r3d.camDistance; from.yaw = gameYaw
+        r3d.showRealm(wantRealm)
+        panVelX = 0f; panVelZ = 0f
+        zoomOverscroll = 0f
+        val to = if (wantRealm) realmRig else baseRig
+        if (wantRealm) {
+            if (to.x == 0f && to.z == 0f || hud.realmSel == null) {
+                // Rise above your own capital.
+                to.x = RealmView.cellCenter(campaign.world.home.first) + 4f
+                to.z = RealmView.cellCenter(campaign.world.home.second)
+            }
+            r3d.camDistance = 14f
+            zoomTo = to.dist.coerceIn(30f, RealmView.MAX_DIST)
+        } else {
+            r3d.camDistance = MAX_ZOOM
+            zoomTo = to.dist.coerceIn(MIN_ZOOM, MAX_ZOOM - 4f)
+        }
+        r3d.camTargetX = to.x; r3d.camTargetZ = to.z
+        gameYaw = to.yaw
+        r3d.camYawDeg = to.yaw
+        applyZoomPitch()
+    }
+
+    /** Rise from the base to the 3D realm. */
+    fun openRealm() {
+        hud.overlay = Overlay.NONE
+        hud.screen = Screen.WORLD
+    }
+
+    /** Drop back down into the base. */
+    fun openBase() {
+        hud.screen = Screen.GAME
+    }
+
+    /** Moves the realm camera to a cell (e.g. a report or a landmark). */
+    fun focusRealmCell(x: Int, y: Int) {
+        r3d.camTargetX = RealmView.cellCenter(x)
+        r3d.camTargetZ = RealmView.cellCenter(y)
+    }
+
+    /** Continues the pan after release, slowing down quickly. */
+    private fun glide(dt: Float) {
+        if (System.nanoTime() - lastPanNanos < 60_000_000L) return
+        val speed = sqrt(panVelX * panVelX + panVelZ * panVelZ)
+        if (speed < 0.05f) {
+            panVelX = 0f; panVelZ = 0f
+            return
+        }
+        moveCamera(panVelX * dt, panVelZ * dt)
+        val decay = kotlin.math.exp(-5f * dt)
+        panVelX *= decay
+        panVelZ *= decay
     }
 
     fun onZoom(factor: Float) {
-        r3d.camDistance = (r3d.camDistance / factor).coerceIn(8f, 34f)
-        // Look more top-down when zoomed out, more cinematic when zoomed in.
-        r3d.camPitchDeg = 40f + (r3d.camDistance - 8f) / 26f * 24f
+        zoomTo = null
+        val want = r3d.camDistance / factor
+        if (r3d.showingRealm) {
+            r3d.camDistance = want.coerceIn(RealmView.MIN_DIST, RealmView.MAX_DIST)
+            // Pinching in further over your own capital drops you into the base.
+            val hx = RealmView.cellCenter(campaign.world.home.first) - r3d.camTargetX
+            val hz = RealmView.cellCenter(campaign.world.home.second) - r3d.camTargetZ
+            val overHome = hx * hx + hz * hz < 36f
+            zoomOverscroll = if (want < RealmView.MIN_DIST && overHome) zoomOverscroll + (RealmView.MIN_DIST - want) else 0f
+            if (zoomOverscroll > 2.5f) openBase()
+        } else {
+            r3d.camDistance = want.coerceIn(MIN_ZOOM, MAX_ZOOM)
+            // Pinching out past the furthest zoom rises into the realm.
+            zoomOverscroll = if (want > MAX_ZOOM) zoomOverscroll + (want - MAX_ZOOM) else 0f
+            if (zoomOverscroll > 5f) openRealm()
+        }
+        applyZoomPitch()
     }
+
+    /** Look more top-down when zoomed out, low and cinematic when zoomed in. */
+    private fun applyZoomPitch() {
+        if (r3d.showingRealm) {
+            val f = ((r3d.camDistance - RealmView.MIN_DIST) / (RealmView.MAX_DIST - RealmView.MIN_DIST)).coerceIn(0f, 1f)
+            r3d.camPitchDeg = 36f + f * 26f
+        } else {
+            val f = ((r3d.camDistance - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)).coerceIn(0f, 1f)
+            r3d.camPitchDeg = 30f + f * 32f
+        }
+    }
+
+    /** Two-finger twist rotates the view around the point you're looking at. */
+    fun onRotate(degrees: Float) {
+        gameYaw = (gameYaw - degrees + 360f) % 360f
+        panVelX = 0f; panVelZ = 0f
+    }
+
+    /** Back to the default north-up view. */
+    fun resetCameraRotation() {
+        gameYaw = 0f
+    }
+
+    val cameraRotated: Boolean get() = gameYaw in 3f..357f
 
     fun selectBuild(defId: String?) {
         hud.selected = null
@@ -966,6 +1207,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         /** Kenney mini characters are ~1 unit tall; raiders are drawn a bit over half a tile tall. */
         const val UNIT_VISUAL_SCALE = 0.8f
         const val TROOP_SCALE = 0.72f
+        const val MIN_ZOOM = 6f
+        const val MAX_ZOOM = 34f
         const val WATER_LEVEL = -0.17f
         /** The Kenney arrow model points along -Z; projectiles are oriented along +Z. */
         const val ARROW_YAW_OFFSET = 0f

@@ -151,6 +151,18 @@
   ],
   "height": 1.0
  },
+ "realm_cache": {
+  "height": 0.389
+ },
+ "realm_camp": {
+  "height": 0.296
+ },
+ "realm_rival_castle": {
+  "height": 2.21
+ },
+ "realm_ruins": {
+  "height": 0.55
+ },
  "rival": {
   "animations": [
    "attack-melee-right",
@@ -168,6 +180,32 @@
   "height": 0.05
  },
  "swordsman": {
+  "animations": [
+   "attack-melee-right",
+   "die",
+   "holding-both-shoot",
+   "holding-right",
+   "holding-right-shoot",
+   "idle",
+   "sprint",
+   "walk"
+  ],
+  "height": 1.0
+ },
+ "villager": {
+  "animations": [
+   "attack-melee-right",
+   "die",
+   "holding-both-shoot",
+   "holding-right",
+   "holding-right-shoot",
+   "idle",
+   "sprint",
+   "walk"
+  ],
+  "height": 1.0
+ },
+ "villager_f": {
   "animations": [
    "attack-melee-right",
    "die",

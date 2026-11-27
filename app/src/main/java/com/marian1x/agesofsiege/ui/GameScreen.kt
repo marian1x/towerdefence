@@ -88,7 +88,7 @@ fun GameScreen(c: GameController) {
             hud.overlay == Overlay.SETTINGS || hud.overlay == Overlay.NEW_GAME || hud.overlay == Overlay.CONFIRM_RESTART ->
                 hud.overlay = if (hud.screen == Screen.MENU) Overlay.NONE else Overlay.PAUSE
             hud.overlay != Overlay.NONE -> hud.overlay = Overlay.NONE
-            hud.screen == Screen.WORLD -> hud.screen = Screen.GAME
+            hud.screen == Screen.WORLD -> c.openBase()
             else -> hud.overlay = Overlay.PAUSE
         }
     }
@@ -101,9 +101,11 @@ fun GameScreen(c: GameController) {
                     Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {
-                            detectTransformGestures { centroid, pan, zoom, _ ->
+                            // panZoomLock: a pinch never turns into an accidental rotation.
+                            detectTransformGestures(panZoomLock = true) { centroid, pan, zoom, rotation ->
                                 if (pan != Offset.Zero) c.onPan(centroid.x, centroid.y, pan.x, pan.y)
                                 if (zoom != 1f) c.onZoom(zoom)
+                                if (rotation != 0f) c.onRotate(rotation)
                             }
                         }
                         .pointerInput(Unit) { detectTapGestures(onTap = { c.onTap(it.x, it.y) }) }
@@ -227,10 +229,14 @@ private fun Hud(c: GameController) {
                 RoundButton("${hud.speed}×", onClick = c::toggleSpeed, highlight = hud.speed > 1)
                 RoundButton("☰", onClick = { hud.overlay = Overlay.PAUSE })
             }
+            if (c.cameraRotated) {
+                Spacer(Modifier.height(6.dp))
+                RoundButton("N", onClick = c::resetCameraRotation)
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NavButton("ARMY ${hud.garrison.values.sum() + hud.away}/${hud.armyCap}") { hud.overlay = Overlay.ARMY }
-                NavButton(if (hud.expeditionCount > 0) "WORLD •${hud.expeditionCount}" else "WORLD") { hud.screen = Screen.WORLD }
+                NavButton(if (hud.expeditionCount > 0) "REALM •${hud.expeditionCount}" else "REALM") { c.openRealm() }
             }
             if (updateWaiting) {
                 Spacer(Modifier.height(6.dp))
@@ -374,7 +380,7 @@ private fun WaveBanner(c: GameController, modifier: Modifier) {
 }
 
 @Composable
-private fun RoundButton(label: String, onClick: () -> Unit, highlight: Boolean = false) {
+internal fun RoundButton(label: String, onClick: () -> Unit, highlight: Boolean = false) {
     Box(
         Modifier.size(42.dp).clip(CircleShape)
             .background(if (highlight) Gold else PanelBg)

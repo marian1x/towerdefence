@@ -1,10 +1,14 @@
 package com.marian1x.agesofsiege.ui
 
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,21 +28,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -48,92 +45,149 @@ import com.marian1x.agesofsiege.core.Content
 import com.marian1x.agesofsiege.core.Phase
 import com.marian1x.agesofsiege.core.Poi
 import com.marian1x.agesofsiege.core.PoiKind
-import com.marian1x.agesofsiege.core.Terrain
-import com.marian1x.agesofsiege.core.World
 import com.marian1x.agesofsiege.game.GameController
-import com.marian1x.agesofsiege.game.Screen
-import kotlin.math.floor
-import kotlin.math.min
 
-private val Parchment = Color(0xFFE8D7B0)
-private val Fog = Color(0xFFCDBB92)
-private val Ink = Color(0xFF4A3B28)
-
-private fun terrainColor(t: Terrain) = when (t) {
-    Terrain.GRASS -> Color(0xFFA8C878)
-    Terrain.FOREST -> Color(0xFF6E9E58)
-    Terrain.HILLS -> Color(0xFFC2AE7E)
-    Terrain.MOUNTAIN -> Color(0xFF9C978F)
-    Terrain.WATER -> Color(0xFF79AECB)
+/**
+ * The realm screen: the 3D realm (rendered by RealmView behind this UI) with camera gestures,
+ * floating labels over landmarks, and the side panel for sending armies.
+ */
+@Composable
+fun WorldMapScreen(c: GameController) {
+    val camp = c.campaign
+    Box(Modifier.fillMaxSize()) {
+        // Camera gestures + taps on the 3D realm (full-screen so coordinates match the 3D view).
+        Box(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTransformGestures(panZoomLock = true) { centroid, pan, zoom, rotation ->
+                        if (pan != Offset.Zero) c.onPan(centroid.x, centroid.y, pan.x, pan.y)
+                        if (zoom != 1f) c.onZoom(zoom)
+                        if (rotation != 0f) c.onRotate(rotation)
+                    }
+                }
+                .pointerInput(Unit) { detectTapGestures(onTap = { c.onTap(it.x, it.y) }) }
+        )
+        RealmLabels(c)
+        Row(Modifier.fillMaxSize().safeDrawingPadding()) {
+            Box(Modifier.weight(1f).fillMaxHeight().padding(10.dp)) {
+                Row(Modifier.align(Alignment.TopStart), verticalAlignment = Alignment.CenterVertically) {
+                    MenuButton("← BASE") { c.openBase() }
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "THE REALM", fontFamily = GameFont, fontSize = 22.sp, color = Gold,
+                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(PanelBg).padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                    if (c.cameraRotated) {
+                        Spacer(Modifier.width(8.dp))
+                        RoundButton("N", onClick = c::resetCameraRotation)
+                    }
+                }
+                Text(
+                    "Tap a region · drag to move · pinch in over your castle to return",
+                    color = Color.White, fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.BottomStart)
+                        .clip(RoundedCornerShape(10.dp)).background(Color(0xB0101420)).padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+            SidePanel(c, camp)
+        }
+    }
 }
 
 @Composable
-fun WorldMapScreen(c: GameController) {
+private fun SidePanel(c: GameController, camp: Campaign) {
     val hud = c.hud
-    val camp = c.campaign
-    var selected by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    Row(Modifier.fillMaxSize().background(Color(0xFF2A2118)).safeDrawingPadding()) {
-        // ------------------------------------------------ map
-        Box(Modifier.weight(1f).fillMaxHeight().padding(10.dp)) {
-            Canvas(
-                Modifier.fillMaxSize().pointerInput(Unit) {
-                    detectTapGestures { p ->
-                        val cell = min(size.width / World.W.toFloat(), size.height / World.H.toFloat())
-                        val ox = (size.width - cell * World.W) / 2
-                        val oy = (size.height - cell * World.H) / 2
-                        val x = floor((p.x - ox) / cell).toInt()
-                        val y = floor((p.y - oy) / cell).toInt()
-                        if (x in 0 until World.W && y in 0 until World.H) selected = x to y
-                    }
-                }
-            ) {
-                c.frame.intValue // animate marching armies
-                drawWorld(camp, selected)
-            }
-            Row(Modifier.align(Alignment.TopStart).padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                MenuButton("← BASE") { hud.screen = Screen.GAME }
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    "THE REALM", fontFamily = GameFont, fontSize = 24.sp, color = Ink,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xCCE8D7B0)).padding(horizontal = 12.dp, vertical = 4.dp),
-                )
+    Column(
+        Modifier.width(300.dp).fillMaxHeight().background(Color(0xF01A1F2B)).padding(12.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        Text(hud.settings.lordName, fontFamily = GameFont, fontSize = 20.sp, color = Gold)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            ResourceIcon(ResourceKind.GOLD, Modifier.size(14.dp)); Text("${hud.gold}", color = Color.White, fontSize = 13.sp)
+            ResourceIcon(ResourceKind.WOOD, Modifier.size(14.dp)); Text("${hud.wood}", color = Color.White, fontSize = 13.sp)
+            ResourceIcon(ResourceKind.STONE, Modifier.size(14.dp)); Text("${hud.stone}", color = Color.White, fontSize = 13.sp)
+        }
+        Text(
+            "Army: ${hud.garrison.values.sum()} at home · ${hud.away} away · cap ${hud.armyCap}",
+            color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp),
+        )
+        if (hud.phase == Phase.ACTIVE) {
+            Text("⚠ Wave ${hud.wave} is attacking your base!", color = Danger, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+        } else {
+            Text("Next wave in ${hud.countdown}s", color = TextDim, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        val sel = hud.realmSel
+        if (sel == null) {
+            Text("Tap the land to choose a destination.", color = Color.White, fontSize = 14.sp)
+        } else {
+            SelectionCard(c, sel.first, sel.second) { hud.realmSel = null }
+        }
+        RivalStatus(camp)
+        if (sel == null) Legend()
+        if (hud.reports.isNotEmpty()) {
+            SectionLabel("Reports")
+            for ((text, good) in hud.reports.take(8)) {
+                Text("• $text", color = if (good) Color(0xFF9CE8A8) else Color(0xFFFFC59A), fontSize = 12.sp, modifier = Modifier.padding(bottom = 3.dp))
             }
         }
-        // ------------------------------------------------ side panel
-        Column(
-            Modifier.width(320.dp).fillMaxHeight().background(Color(0xF01A1F2B)).padding(12.dp)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            Text(hud.settings.lordName, fontFamily = GameFont, fontSize = 20.sp, color = Gold)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                ResourceIcon(ResourceKind.GOLD, Modifier.size(14.dp)); Text("${hud.gold}", color = Color.White, fontSize = 13.sp)
-                ResourceIcon(ResourceKind.WOOD, Modifier.size(14.dp)); Text("${hud.wood}", color = Color.White, fontSize = 13.sp)
-                ResourceIcon(ResourceKind.STONE, Modifier.size(14.dp)); Text("${hud.stone}", color = Color.White, fontSize = 13.sp)
+    }
+}
+
+/** Name / strength tags floating above landmarks and marching armies. */
+@Composable
+private fun RealmLabels(c: GameController) {
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    val paint = remember {
+        Paint().apply {
+            isAntiAlias = true
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+            textSize = 12f * density
+        }
+    }
+    val bg = remember { Paint().apply { isAntiAlias = true } }
+    val rect = remember { RectF() }
+    val pos = remember { FloatArray(2) }
+    Canvas(Modifier.fillMaxSize()) {
+        c.frame.intValue // redraw every frame
+        val camp = c.campaign
+        val world = camp.world
+        val r3d = c.r3d
+        if (!r3d.showingRealm) return@Canvas
+        val canvas = drawContext.canvas.nativeCanvas
+
+        fun tag(x: Float, y: Float, z: Float, text: String, color: Int, fill: Int = 0xCC101420.toInt()) {
+            if (!r3d.worldToScreen(x, y, z, pos)) return
+            val w = paint.measureText(text) / 2 + 7f * density
+            rect.set(pos[0] - w, pos[1] - 15f * density, pos[0] + w, pos[1] + 4f * density)
+            bg.color = fill
+            canvas.drawRoundRect(rect, 8f * density, 8f * density, bg)
+            paint.color = color
+            canvas.drawText(text, pos[0], pos[1] - 1f * density, paint)
+        }
+
+        val home = c.realm.labelAnchor(world.home.first, world.home.second, 2.9f)
+        tag(home[0], home[1], home[2], c.hud.settings.lordName, 0xFF9FC8FF.toInt())
+        for (p in world.pois) {
+            val visible = world.isExplored(p.x, p.y) || (p.kind == PoiKind.RIVAL_CAPITAL && camp.rival.contact)
+            if (!visible) continue
+            if (p.cleared && p.kind != PoiKind.RUINS && p.kind != PoiKind.RIVAL_CAPITAL) continue
+            val a = c.realm.labelAnchor(p.x, p.y, if (p.kind == PoiKind.RIVAL_CAPITAL) 3.0f else 1.4f)
+            when (p.kind) {
+                PoiKind.CACHE -> tag(a[0], a[1], a[2], "Supplies", 0xFFFFD34D.toInt())
+                PoiKind.CAMP -> tag(a[0], a[1], a[2], "Camp ⚔${p.power.toInt()}", 0xFFFFB0A0.toInt())
+                PoiKind.RUINS -> if (p.cleared) tag(a[0], a[1], a[2], "Ruins ✓", 0xFF9CE8A8.toInt())
+                else tag(a[0], a[1], a[2], "Ruins ⚔${p.power.toInt()}", 0xFFE0D0FF.toInt())
+                PoiKind.RIVAL_CAPITAL -> if (camp.rival.vassal) tag(a[0], a[1], a[2], "${camp.rival.name} (vassal)", 0xFF9CE8A8.toInt())
+                else tag(a[0], a[1], a[2], "${camp.rival.name} ⚔${camp.rival.defense.toInt()}", 0xFFFF8A7A.toInt(), 0xCC3A1010.toInt())
             }
-            Text(
-                "Army: ${hud.garrison.values.sum()} at home · ${hud.away} away · cap ${hud.armyCap}",
-                color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp),
-            )
-            if (hud.phase == Phase.ACTIVE) {
-                Text("⚠ Wave ${hud.wave} is attacking your base!", color = Danger, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
-            } else {
-                Text("Next wave in ${hud.countdown}s", color = TextDim, fontSize = 12.sp)
-            }
-            Spacer(Modifier.height(8.dp))
-            val sel = selected
-            if (sel == null) {
-                Text("Tap the map to choose a destination.", color = Color.White, fontSize = 14.sp)
-            } else {
-                SelectionCard(c, sel.first, sel.second) { selected = null }
-            }
-            RivalStatus(camp)
-            if (sel == null) Legend()
-            if (hud.reports.isNotEmpty()) {
-                SectionLabel("Reports")
-                for ((text, good) in hud.reports.take(8)) {
-                    Text("• $text", color = if (good) Color(0xFF9CE8A8) else Color(0xFFFFC59A), fontSize = 12.sp, modifier = Modifier.padding(bottom = 3.dp))
-                }
-            }
+        }
+        for (e in camp.expeditions) {
+            val a = c.realm.armyAnchor(e)
+            val power = e.troops.sumOf { Content.troopPower(it).toDouble() }.toInt()
+            tag(a[0], a[1], a[2], (if (e.returning) "↩ " else "") + "${e.troops.size} ⚔$power", if (e.returning) 0xFF9CE8A8.toInt() else 0xFFFFD34D.toInt())
         }
     }
 }
@@ -161,6 +215,7 @@ private fun Legend() {
     Text("📦 Supply cache – free loot", color = TextDim, fontSize = 12.sp)
     Text("⛺ Marauder camp – fight for loot; each cleared camp weakens raids", color = TextDim, fontSize = 12.sp)
     Text("🏛 Ruins – guarded treasure", color = TextDim, fontSize = 12.sp)
+    Text("☁ Clouds hide unexplored land – send scouts to lift them", color = TextDim, fontSize = 12.sp)
 }
 
 @Composable
@@ -185,6 +240,8 @@ private fun SelectionCard(c: GameController, x: Int, y: Int, onDone: () -> Unit)
         when {
             isHome -> {
                 Text("Your keep and its defenders.", color = TextDim, fontSize = 12.sp)
+                Spacer(Modifier.height(6.dp))
+                MenuButton("ENTER BASE", Modifier.fillMaxWidth(), primary = true) { c.openBase() }
                 return@Column
             }
             explored && !terrain.passable -> {
@@ -257,124 +314,4 @@ private fun StepButton(label: String, onClick: () -> Unit) {
         Modifier.size(30.dp).clip(CircleShape).background(Color(0xFF39425A)).clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Text(label, color = Color.White, fontSize = 16.sp) }
-}
-
-// ------------------------------------------------------------------ map drawing
-
-private fun DrawScope.drawWorld(camp: Campaign, selected: Pair<Int, Int>?) {
-    val world = camp.world
-    val cell = min(size.width / World.W, size.height / World.H)
-    val ox = (size.width - cell * World.W) / 2
-    val oy = (size.height - cell * World.H) / 2
-    drawRect(Parchment, Offset(ox - 6, oy - 6), Size(cell * World.W + 12, cell * World.H + 12))
-
-    for (y in 0 until World.H) for (x in 0 until World.W) {
-        val px = ox + x * cell
-        val py = oy + y * cell
-        if (!world.explored[world.idx(x, y)]) {
-            val n = ((x * 73856093) xor (y * 19349663)) and 7
-            drawRect(Fog, Offset(px, py), Size(cell + 0.5f, cell + 0.5f))
-            if (n == 0) drawCircle(Color(0x22000000), cell * 0.12f, Offset(px + cell * 0.5f, py + cell * 0.5f))
-            continue
-        }
-        val t = world.terrainAt(x, y)
-        drawRect(terrainColor(t), Offset(px, py), Size(cell + 0.5f, cell + 0.5f))
-        val cx = px + cell / 2
-        val cy = py + cell / 2
-        when (t) {
-            Terrain.FOREST -> {
-                tri(cx - cell * 0.18f, cy + cell * 0.05f, cell * 0.22f, Color(0xFF3F6E35))
-                tri(cx + cell * 0.16f, cy + cell * 0.2f, cell * 0.2f, Color(0xFF4A7C3E))
-            }
-            Terrain.HILLS -> drawArc(Color(0xFF8C7A52), 200f, 140f, false, Offset(px + cell * 0.15f, cy - cell * 0.1f), Size(cell * 0.7f, cell * 0.5f), style = Stroke(cell * 0.08f))
-            Terrain.MOUNTAIN -> {
-                tri(cx, cy + cell * 0.25f, cell * 0.4f, Color(0xFF6E6A64))
-                tri(cx, cy - cell * 0.02f, cell * 0.14f, Color(0xFFF2F2F2))
-            }
-            Terrain.WATER -> drawLine(Color(0xFFA9D0E4), Offset(px + cell * 0.2f, cy), Offset(px + cell * 0.8f, cy), strokeWidth = cell * 0.06f)
-            Terrain.GRASS -> Unit
-        }
-    }
-    // Rival territory (once known).
-    val rival = camp.rival
-    if (rival.contact && !rival.vassal) {
-        drawCircle(
-            Color(0x33D0453A), rival.explored * cell,
-            Offset(ox + (world.rivalHome.first + 0.5f) * cell, oy + (world.rivalHome.second + 0.5f) * cell),
-        )
-    }
-    // Points of interest.
-    for (p in world.pois) {
-        if (!world.explored[world.idx(p.x, p.y)] && !(p.kind == PoiKind.RIVAL_CAPITAL && rival.contact)) continue
-        val c = Offset(ox + (p.x + 0.5f) * cell, oy + (p.y + 0.5f) * cell)
-        val alpha = if (p.cleared && p.kind != PoiKind.RIVAL_CAPITAL) 0.4f else 1f
-        when (p.kind) {
-            PoiKind.CACHE -> {
-                drawRect(Color(0xFF8A5A2B).copy(alpha = alpha), Offset(c.x - cell * 0.28f, c.y - cell * 0.18f), Size(cell * 0.56f, cell * 0.38f))
-                drawRect(Gold.copy(alpha = alpha), Offset(c.x - cell * 0.28f, c.y - cell * 0.22f), Size(cell * 0.56f, cell * 0.12f))
-            }
-            PoiKind.CAMP -> tri(c.x, c.y + cell * 0.3f, cell * 0.36f, Color(0xFFB8432F).copy(alpha = alpha))
-            PoiKind.RUINS -> for (i in -1..1) drawRect(
-                Color(0xFF8E8A82).copy(alpha = alpha), Offset(c.x + i * cell * 0.2f - cell * 0.06f, c.y - cell * 0.25f), Size(cell * 0.12f, cell * 0.5f),
-            )
-            PoiKind.RIVAL_CAPITAL -> castle(c, cell, if (rival.vassal) Color(0xFF7A9E6A) else Color(0xFFC0392B))
-        }
-        if (p.cleared && p.kind != PoiKind.RIVAL_CAPITAL) {
-            drawLine(Color(0xFF2E7D32), Offset(c.x - cell * 0.2f, c.y), Offset(c.x - cell * 0.05f, c.y + cell * 0.15f), strokeWidth = cell * 0.08f)
-            drawLine(Color(0xFF2E7D32), Offset(c.x - cell * 0.05f, c.y + cell * 0.15f), Offset(c.x + cell * 0.25f, c.y - cell * 0.2f), strokeWidth = cell * 0.08f)
-        }
-    }
-    castle(Offset(ox + (world.home.first + 0.5f) * cell, oy + (world.home.second + 0.5f) * cell), cell, Color(0xFF3F6FB5))
-
-    // Marching armies.
-    for (e in camp.expeditions) {
-        val target = e.path.last()
-        val dash = PathEffect.dashPathEffect(floatArrayOf(cell * 0.25f, cell * 0.2f))
-        val path = Path()
-        e.path.forEachIndexed { i, idx ->
-            val p = Offset(ox + (idx % World.W + 0.5f) * cell, oy + (idx / World.W + 0.5f) * cell)
-            if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
-        }
-        drawPath(path, Ink.copy(alpha = 0.6f), style = Stroke(cell * 0.07f, pathEffect = dash))
-        val i0 = e.progress.toInt().coerceIn(0, e.path.size - 1)
-        val i1 = (i0 + 1).coerceAtMost(e.path.size - 1)
-        val f = e.progress - i0
-        val a = e.path[i0]
-        val b = e.path[i1]
-        val pos = Offset(
-            ox + ((a % World.W) * (1 - f) + (b % World.W) * f + 0.5f) * cell,
-            oy + ((a / World.W) * (1 - f) + (b / World.W) * f + 0.5f) * cell,
-        )
-        drawCircle(Color(0xFF1A1F2B), cell * 0.42f, pos)
-        drawCircle(if (e.returning) Color(0xFF7CFC9A) else Gold, cell * 0.32f, pos)
-        drawLine(Color.White, Offset(pos.x, pos.y - cell * 0.6f), Offset(pos.x, pos.y), strokeWidth = cell * 0.06f)
-        drawRect(Color(0xFF3F6FB5), Offset(pos.x, pos.y - cell * 0.6f), Size(cell * 0.35f, cell * 0.22f))
-        val tx = ox + (target % World.W + 0.5f) * cell
-        val ty = oy + (target / World.W + 0.5f) * cell
-        drawCircle(Ink, cell * 0.5f, Offset(tx, ty), style = Stroke(cell * 0.05f))
-    }
-    // Selection.
-    selected?.let { (x, y) ->
-        drawRect(Color.White, Offset(ox + x * cell, oy + y * cell), Size(cell, cell), style = Stroke(cell * 0.1f))
-    }
-    drawRect(Ink, Offset(ox - 6, oy - 6), Size(cell * World.W + 12, cell * World.H + 12), style = Stroke(4f))
-}
-
-private fun DrawScope.tri(cx: Float, baseY: Float, h: Float, color: Color) {
-    val p = Path().apply {
-        moveTo(cx, baseY - h)
-        lineTo(cx + h * 0.6f, baseY)
-        lineTo(cx - h * 0.6f, baseY)
-        close()
-    }
-    drawPath(p, color)
-}
-
-private fun DrawScope.castle(c: Offset, cell: Float, color: Color) {
-    val w = cell * 0.9f
-    val h = cell * 0.6f
-    drawRect(color, Offset(c.x - w / 2, c.y - h / 2), Size(w, h))
-    for (i in 0..2) drawRect(color, Offset(c.x - w / 2 + i * w * 0.4f, c.y - h / 2 - cell * 0.18f), Size(w * 0.2f, cell * 0.2f))
-    drawRect(Color(0xFF2A2118), Offset(c.x - cell * 0.1f, c.y), Size(cell * 0.2f, h / 2))
-    drawRect(Color(0xFF2A2118), Offset(c.x - w / 2, c.y - h / 2), Size(w, h), style = Stroke(cell * 0.05f))
 }

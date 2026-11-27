@@ -16,6 +16,7 @@ class Fx(private val r: Renderer3D, private val cube: Mesh) {
         var size = 0.1f
         var gravity = 9f
         var spin = 0f
+        var grow = false
         var active = false
     }
 
@@ -46,6 +47,8 @@ class Fx(private val r: Renderer3D, private val cube: Mesh) {
         x: Float, y: Float, z: Float, count: Int, color: Int, glow: Boolean = false,
         speed: Float = 2.5f, up: Float = 2.5f, size: Float = 0.09f, life: Float = 0.6f, gravity: Float = 9f,
         glowIntensity: Float = 1f,
+        /** Smoke puffs grow and drift instead of shrinking. */
+        grow: Boolean = false,
     ) {
         repeat(count) {
             val p = take(glow) ?: return
@@ -59,6 +62,7 @@ class Fx(private val r: Renderer3D, private val cube: Mesh) {
             p.size = size * (0.7f + rnd.nextFloat() * 0.6f)
             p.gravity = gravity
             p.spin = rnd.nextFloat() * 6f
+            p.grow = grow
             r.setTint(p.mi, varyColor(color))
             p.mi.setParameter("flash", glowIntensity - 1f)
         }
@@ -87,8 +91,9 @@ class Fx(private val r: Renderer3D, private val cube: Mesh) {
                 p.y = 0.02f; p.vy = -p.vy * 0.3f; p.vx *= 0.6f; p.vz *= 0.6f
             }
             val t = p.life / p.maxLife
-            p.spin += dt * 5f
-            r.setTransform(p.entity, p.x, p.y, p.z, yaw = p.spin, scale = p.size * (0.3f + 0.7f * t), pitch = p.spin * 0.7f)
+            p.spin += dt * (if (p.grow) 0.8f else 5f)
+            val s = if (p.grow) p.size * (0.5f + 1.3f * (1f - t)) * minOf(1f, t * 4f) else p.size * (0.3f + 0.7f * t)
+            r.setTransform(p.entity, p.x, p.y, p.z, yaw = p.spin, scale = s, pitch = p.spin * 0.7f)
         }
     }
 
