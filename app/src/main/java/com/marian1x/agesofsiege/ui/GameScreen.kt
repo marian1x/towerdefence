@@ -232,6 +232,10 @@ private fun Hud(c: GameController) {
                 NavButton("ARMY ${hud.garrison.values.sum() + hud.away}/${hud.armyCap}") { hud.overlay = Overlay.ARMY }
                 NavButton(if (hud.expeditionCount > 0) "WORLD •${hud.expeditionCount}" else "WORLD") { hud.screen = Screen.WORLD }
             }
+            if (updateWaiting) {
+                Spacer(Modifier.height(6.dp))
+                NavButton("⬆ UPDATE") { hud.overlay = Overlay.SETTINGS }
+            }
         }
         // Mode hint.
         val mode = hud.mode

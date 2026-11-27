@@ -41,12 +41,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.marian1x.agesofsiege.BuildConfig
 import com.marian1x.agesofsiege.core.CampaignSettings
 import com.marian1x.agesofsiege.core.Difficulty
 import com.marian1x.agesofsiege.core.Pace
 import com.marian1x.agesofsiege.game.GameController
 import com.marian1x.agesofsiege.game.Overlay
 import com.marian1x.agesofsiege.game.Screen
+import com.marian1x.agesofsiege.update.AppUpdater
 
 // ------------------------------------------------------------------ shared building blocks
 
@@ -163,8 +165,12 @@ fun MainMenu(c: GameController) {
             MenuButton("NEW GAME", Modifier.fillMaxWidth(), primary = !c.hasSave) { c.hud.overlay = Overlay.NEW_GAME }
             Spacer(Modifier.height(10.dp))
             MenuButton("SETTINGS", Modifier.fillMaxWidth()) { c.hud.overlay = Overlay.SETTINGS }
+            if (updateWaiting || AppUpdater.availableRelease != null) {
+                Spacer(Modifier.height(14.dp))
+                UpdateCard()
+            }
             Spacer(Modifier.height(24.dp))
-            Text("Prototype · Medieval Age", color = Color(0x80FFFFFF), fontSize = 12.sp)
+            Text("Prototype · Medieval Age · v${BuildConfig.VERSION_NAME}", color = Color(0x80FFFFFF), fontSize = 12.sp)
             Text("Art: Kenney (CC0) · Sky: Poly Haven (CC0)", color = Color(0x80FFFFFF), fontSize = 12.sp)
         }
     }
@@ -260,6 +266,7 @@ fun SettingsPanel(c: GameController) {
             Spacer(Modifier.height(4.dp))
             ChipRow(Difficulty.entries.map { it.label }, s.difficulty.ordinal) { c.updateCampaignSettings(s.copy(difficulty = Difficulty.entries[it])) }
         }
+        UpdateSettingsSection()
         Spacer(Modifier.height(16.dp))
         MenuButton("DONE", Modifier.fillMaxWidth(), primary = true) { back() }
     }

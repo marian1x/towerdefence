@@ -16,3 +16,7 @@ local.properties
 .kotlin
 /tools/blender/out
 __pycache__
+# Signing secrets – never commit (see tools/setup-signing.ps1)
+keystore.properties
+*.jks
+*.keystore
