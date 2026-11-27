@@ -18,3 +18,9 @@ Drag to pan, pinch to zoom.
 - `core/` — pure Kotlin game simulation (rules, content, pathfinding, saves) with unit tests: `./gradlew :core:test`
 - `app/` — Android app: Jetpack Compose HUD + Filament 3D renderer with procedurally generated low-poly models
 - `docs/GAME_DESIGN.md` — concept, systems and roadmap
+- `docs/ART_PIPELINE.md` — how the 3D models, icons and lighting are built with Blender + Filament tools
+- `tools/blender/` — asset pipeline scripts
+
+## Credits
+Models: [Kenney](https://kenney.nl) (CC0). Sky lighting: [Poly Haven](https://polyhaven.com) HDRI (CC0).
+Font: Lilita One (SIL OFL, see `licenses/`).

@@ -27,6 +27,9 @@ import com.google.android.filament.Viewport
 import com.google.android.filament.android.DisplayHelper
 import com.google.android.filament.android.UiHelper
 import com.google.android.filament.filamat.MaterialBuilder
+import com.google.android.filament.gltfio.Gltfio
+import com.google.android.filament.utils.KTX1Loader
+import com.google.android.filament.utils.Utils
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
@@ -57,6 +60,7 @@ class Renderer3D(context: Context) {
     lateinit var litMaterial: Material
     lateinit var glowMaterial: Material
     lateinit var ghostMaterial: Material
+    lateinit var waterMaterial: Material
     /** Shared instance for static scenery (white tint, no flash). */
     val defaultLit: MaterialInstance
 
@@ -81,6 +85,8 @@ class Renderer3D(context: Context) {
 
     init {
         Filament.init()
+        Gltfio.init()
+        Utils.init()
         MaterialBuilder.init()
         engine = Engine.Builder().backend(Engine.Backend.OPENGL).build()
         renderer = engine.createRenderer()
@@ -92,23 +98,30 @@ class Renderer3D(context: Context) {
         view.camera = camera
 
         buildMaterials()
+        buildWaterMaterial()
         MaterialBuilder.shutdown()
         defaultLit = litInstance(0xFFFFFF)
 
         setupPostProcessing()
 
-        // Sky and ambient light.
-        scene.skybox = Skybox.Builder().color(0.36f, 0.58f, 0.86f, 1f).build(engine)
-        scene.indirectLight = IndirectLight.Builder()
-            .irradiance(1, floatArrayOf(0.85f, 0.9f, 1.0f))
-            .intensity(32_000f)
-            .build(engine)
+        // Image-based lighting + sky generated with Filament's cmgen from a CC0 Poly Haven HDRI.
+        try {
+            scene.indirectLight = KTX1Loader.createIndirectLight(engine, readAsset(context, "envs/sky_ibl.ktx"))
+                .indirectLight?.apply { intensity = 18_000f }
+            scene.skybox = KTX1Loader.createSkybox(engine, readAsset(context, "envs/sky_skybox.ktx")).skybox
+        } catch (t: Throwable) {
+            scene.skybox = Skybox.Builder().color(0.36f, 0.58f, 0.86f, 1f).build(engine)
+            scene.indirectLight = IndirectLight.Builder()
+                .irradiance(1, floatArrayOf(0.85f, 0.9f, 1.0f))
+                .intensity(32_000f)
+                .build(engine)
+        }
 
         // Warm sun with soft shadows.
         sunEntity = EntityManager.get().create()
         LightManager.Builder(LightManager.Type.SUN)
-            .color(1.0f, 0.93f, 0.82f)
-            .intensity(105_000f)
+            .color(1.0f, 0.92f, 0.80f)
+            .intensity(120_000f)
             .direction(0.45f, -1f, -0.55f)
             .sunAngularRadius(1.6f)
             .castShadows(true)
@@ -212,6 +225,38 @@ class Renderer3D(context: Context) {
         )
     }
 
+    private fun buildWaterMaterial() {
+        waterMaterial = compile(
+            MaterialBuilder()
+                .name("water")
+                .variable(MaterialBuilder.Variable.CUSTOM0, "pos")
+                .shading(MaterialBuilder.Shading.LIT)
+                .materialVertex(
+                    """
+                    void materialVertex(inout MaterialVertexInputs material) {
+                        material.pos = getPosition();
+                    }
+                    """.trimIndent()
+                )
+                .material(
+                    """
+                    void material(inout MaterialInputs material) {
+                        vec3 p = variable_pos.xyz;
+                        float t = getUserTime().x;
+                        float a = sin(p.x * 1.7 + t * 1.3) * 0.5 + sin((p.x + p.z) * 0.9 + t * 0.7) * 0.5;
+                        float b = cos(p.z * 1.5 - t * 1.1) * 0.5 + cos((p.x - p.z) * 1.1 - t * 0.9) * 0.5;
+                        material.normal = normalize(vec3(a * 0.09, b * 0.09, 1.0));
+                        prepareMaterial(material);
+                        material.baseColor = vec4(0.09, 0.33, 0.50, 1.0);
+                        material.roughness = 0.16;
+                        material.metallic = 0.0;
+                        material.reflectance = 0.7;
+                    }
+                    """.trimIndent()
+                )
+        )
+    }
+
     private fun compile(builder: MaterialBuilder): Material {
         val pkg = builder
             .platform(MaterialBuilder.Platform.MOBILE)
@@ -231,8 +276,9 @@ class Renderer3D(context: Context) {
         }
         view.bloomOptions = view.bloomOptions.apply {
             enabled = true
-            strength = 0.12f
+            strength = 0.05f
             levels = 6
+            threshold = true
         }
         view.multiSampleAntiAliasingOptions = view.multiSampleAntiAliasingOptions.apply {
             enabled = true
@@ -247,8 +293,8 @@ class Renderer3D(context: Context) {
         }
         view.colorGrading = ColorGrading.Builder()
             .toneMapper(ToneMapper.ACESLegacy())
-            .saturation(1.0f)
-            .contrast(1.03f)
+            .saturation(1.08f)
+            .contrast(1.06f)
             .build(engine)
     }
 
@@ -348,6 +394,11 @@ class Renderer3D(context: Context) {
     }
 
     private val tmpMat = FloatArray(16)
+
+    private fun readAsset(context: Context, path: String): ByteBuffer {
+        val bytes = context.assets.open(path).use { it.readBytes() }
+        return ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).put(bytes).also { it.flip() }
+    }
 
     fun destroyEntity(e: Int) {
         scene.remove(e)

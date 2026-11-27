@@ -1,0 +1,167 @@
+{
+ "archer_1": {
+  "headY": 0.76,
+  "height": 1.1
+ },
+ "archer_2": {
+  "headY": 1.36,
+  "height": 1.7
+ },
+ "archer_3": {
+  "headY": 1.96,
+  "height": 2.3
+ },
+ "archer_crew": {
+  "animations": [
+   "attack-melee-right",
+   "die",
+   "holding-both-shoot",
+   "holding-right",
+   "holding-right-shoot",
+   "idle",
+   "sprint",
+   "walk"
+  ],
+  "height": 1.0
+ },
+ "arrow": {
+  "height": 0.16
+ },
+ "ballista_1": {
+  "headY": 0.76,
+  "height": 1.133
+ },
+ "ballista_2": {
+  "headY": 1.36,
+  "height": 1.733
+ },
+ "ballista_3": {
+  "headY": 1.96,
+  "height": 2.3
+ },
+ "ballista_head": {
+  "height": 0.5
+ },
+ "boulder": {
+  "height": 0.24
+ },
+ "boulders": {
+  "height": 0.415
+ },
+ "brute": {
+  "animations": [
+   "attack-melee-right",
+   "die",
+   "holding-both-shoot",
+   "holding-right",
+   "holding-right-shoot",
+   "idle",
+   "sprint",
+   "walk"
+  ],
+  "height": 1.0
+ },
+ "catapult_1": {
+  "headY": 0.21,
+  "height": 0.21
+ },
+ "catapult_2": {
+  "headY": 0.76,
+  "height": 1.1
+ },
+ "catapult_3": {
+  "headY": 1.36,
+  "height": 1.7
+ },
+ "catapult_head": {
+  "height": 0.463
+ },
+ "ground": {
+  "height": 1.153,
+  "top": 0.0
+ },
+ "grove": {
+  "height": 0.76
+ },
+ "house_1": {
+  "height": 1.08
+ },
+ "house_2": {
+  "height": 2.16
+ },
+ "house_3": {
+  "height": 2.16
+ },
+ "keep": {
+  "height": 3.026
+ },
+ "lumber_1": {
+  "height": 0.974
+ },
+ "lumber_2": {
+  "height": 0.974
+ },
+ "lumber_3": {
+  "height": 0.974
+ },
+ "outrider": {
+  "animations": [
+   "attack-melee-right",
+   "die",
+   "holding-both-shoot",
+   "holding-right",
+   "holding-right-shoot",
+   "idle",
+   "sprint",
+   "walk"
+  ],
+  "height": 1.0
+ },
+ "pines": {
+  "height": 0.951
+ },
+ "quarry_1": {
+  "height": 0.453
+ },
+ "quarry_2": {
+  "height": 0.488
+ },
+ "quarry_3": {
+  "height": 0.523
+ },
+ "raider": {
+  "animations": [
+   "attack-melee-right",
+   "die",
+   "holding-both-shoot",
+   "holding-right",
+   "holding-right-shoot",
+   "idle",
+   "sprint",
+   "walk"
+  ],
+  "height": 1.0
+ },
+ "selection": {
+  "height": 0.05
+ },
+ "wall_block": {
+  "height": 0.655
+ },
+ "wall_post": {
+  "height": 1.31
+ },
+ "warlord": {
+  "animations": [
+   "attack-melee-right",
+   "die",
+   "holding-both-shoot",
+   "holding-right",
+   "holding-right-shoot",
+   "idle",
+   "sprint",
+   "walk"
+  ],
+  "height": 1.0
+ }
+}

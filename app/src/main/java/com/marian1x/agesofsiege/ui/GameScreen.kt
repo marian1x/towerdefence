@@ -49,7 +49,12 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import com.marian1x.agesofsiege.R
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -68,6 +73,9 @@ private val PanelBorder = Color(0x40FFFFFF)
 private val Gold = Color(0xFFFFC94D)
 private val Danger = Color(0xFFFF5A4A)
 private val TextDim = Color(0xB3FFFFFF)
+
+/** Lilita One (SIL Open Font License) – chunky display font for titles and numbers. */
+private val GameFont = FontFamily(Font(R.font.lilita_one))
 
 @Composable
 fun GameScreen(c: GameController) {
@@ -111,7 +119,7 @@ private fun WorldOverlay(c: GameController) {
         val barH = 4.5.dp.toPx()
         for (e in g.enemies) {
             if (!e.alive || e.hp >= e.maxHp) continue
-            if (!r.worldToScreen(e.x, 0.8f * e.def.scale * GameController.UNIT_VISUAL_SCALE + 0.2f, e.y, pos)) continue
+            if (!r.worldToScreen(e.x, GameController.enemyVisualScale(e.def) * 1.05f + 0.12f, e.y, pos)) continue
             val w = barW * (0.8f + 0.25f * e.def.scale)
             val left = pos[0] - w / 2
             drawRoundRect(Color(0xCC000000), Offset(left - 1.5f, pos[1] - 1.5f), Size(w + 3f, barH + 3f), CornerRadius(3f))
@@ -122,7 +130,7 @@ private fun WorldOverlay(c: GameController) {
         // Veterancy pips above towers.
         for (s in g.structures.values) {
             if (s.kind != StructureKind.TOWER || s.rank < 2) continue
-            if (!r.worldToScreen(s.cx, 2.55f, s.cy, pos)) continue
+            if (!r.worldToScreen(s.cx, c.markerHeight(s), s.cy, pos)) continue
             val n = s.rank - 1
             val gap = 7.dp.toPx()
             for (i in 0 until n) {
@@ -234,7 +242,7 @@ private fun ResourceChip(kind: ResourceKind, amount: Int) {
         Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             ResourceIcon(kind, Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Text("$amount", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text("$amount", color = Color.White, fontFamily = GameFont, fontSize = 18.sp)
         }
     }
 }
@@ -272,7 +280,7 @@ private fun WaveBanner(c: GameController, modifier: Modifier) {
     Panel(modifier.widthIn(min = 250.dp)) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("WAVE ${hud.wave}", color = Gold, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp)
+                Text("WAVE ${hud.wave}", color = Gold, fontFamily = GameFont, fontSize = 20.sp)
                 Spacer(Modifier.width(10.dp))
                 if (hud.phase == Phase.PREP) {
                     Text("in ${hud.countdown}s", color = TextDim, fontSize = 14.sp)
@@ -322,7 +330,7 @@ private fun RoundButton(label: String, onClick: () -> Unit, highlight: Boolean =
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (highlight) Color(0xFF1A1F2B) else Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        Text(label, color = if (highlight) Color(0xFF1A1F2B) else Color.White, fontFamily = GameFont, fontSize = 16.sp)
     }
 }
 
@@ -355,10 +363,10 @@ private fun BuildCard(id: String, cost: Cost, selected: Boolean, affordable: Boo
             .padding(vertical = 6.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        BuildIcon(id, Modifier.size(30.dp))
+        BuildIcon(id, Modifier.size(48.dp))
         Text(
             nameOf(id).replace(" Tower", "").replace("Stone ", ""),
-            color = if (affordable) Color.White else TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+            color = if (affordable) Color.White else TextDim, fontSize = 13.sp, fontFamily = GameFont, maxLines = 1,
         )
         CostRow(cost, affordable)
     }
@@ -374,56 +382,19 @@ private fun CostRow(cost: Cost, affordable: Boolean, fontSize: Int = 10) {
     }
 }
 
-/** Simple vector icons for the build cards. */
+/** Build-card icons rendered from the real 3D models by tools/blender/render_previews.py. */
 @Composable
 private fun BuildIcon(id: String, modifier: Modifier) {
-    Canvas(modifier) {
-        val s = size.minDimension
-        val stone = Color(0xFFB9BEC6)
-        val wood = Color(0xFFB07A44)
-        val roof = Color(0xFFD0603F)
-        when (id) {
-            "archer" -> {
-                drawRect(wood, Offset(s * 0.3f, s * 0.35f), Size(s * 0.4f, s * 0.6f))
-                drawPath(Path().apply { moveTo(s * 0.18f, s * 0.38f); lineTo(s * 0.5f, s * 0.02f); lineTo(s * 0.82f, s * 0.38f); close() }, roof)
-            }
-            "ballista" -> {
-                drawRect(stone, Offset(s * 0.15f, s * 0.6f), Size(s * 0.7f, s * 0.35f))
-                drawLine(wood, Offset(s * 0.5f, s * 0.15f), Offset(s * 0.5f, s * 0.6f), strokeWidth = s * 0.12f)
-                drawArc(wood, 200f, 140f, false, Offset(s * 0.1f, s * 0.15f), Size(s * 0.8f, s * 0.5f), style = Stroke(s * 0.08f))
-            }
-            "catapult" -> {
-                drawRect(wood, Offset(s * 0.1f, s * 0.6f), Size(s * 0.8f, s * 0.15f))
-                drawLine(wood, Offset(s * 0.3f, s * 0.6f), Offset(s * 0.75f, s * 0.15f), strokeWidth = s * 0.09f)
-                drawCircle(Color(0xFF7F8186), s * 0.13f, Offset(s * 0.78f, s * 0.15f))
-                drawCircle(Color(0xFF6E4A2A), s * 0.1f, Offset(s * 0.25f, s * 0.82f))
-                drawCircle(Color(0xFF6E4A2A), s * 0.1f, Offset(s * 0.75f, s * 0.82f))
-            }
-            "wall" -> {
-                for (row in 0..2) for (col in 0..2) {
-                    val off = if (row % 2 == 0) 0f else s * 0.15f
-                    drawRect(stone, Offset(col * s * 0.32f - off + s * 0.04f, s * 0.2f + row * s * 0.26f), Size(s * 0.28f, s * 0.22f))
-                }
-            }
-            "house" -> {
-                drawRect(Color(0xFFECDFC2), Offset(s * 0.2f, s * 0.45f), Size(s * 0.6f, s * 0.5f))
-                drawPath(Path().apply { moveTo(s * 0.1f, s * 0.48f); lineTo(s * 0.5f, s * 0.1f); lineTo(s * 0.9f, s * 0.48f); close() }, roof)
-                drawRect(Color(0xFF6E4A2A), Offset(s * 0.42f, s * 0.65f), Size(s * 0.16f, s * 0.3f))
-            }
-            "lumber" -> {
-                for (i in 0..2) {
-                    val y = s * (0.25f + i * 0.22f)
-                    drawRoundRect(Color(0xFF7A4E28), Offset(s * 0.08f, y), Size(s * 0.84f, s * 0.2f), CornerRadius(s * 0.1f))
-                    drawCircle(Color(0xFFE2B57E), s * 0.09f, Offset(s * 0.82f, y + s * 0.1f))
-                }
-            }
-            "quarry" -> {
-                drawPath(Path().apply { moveTo(s * 0.05f, s * 0.95f); lineTo(s * 0.35f, s * 0.35f); lineTo(s * 0.6f, s * 0.55f); lineTo(s * 0.95f, s * 0.95f); close() }, Color(0xFF8D939B))
-                drawLine(wood, Offset(s * 0.55f, s * 0.1f), Offset(s * 0.85f, s * 0.6f), strokeWidth = s * 0.08f)
-                drawLine(Color(0xFFD7DBE0), Offset(s * 0.4f, s * 0.15f), Offset(s * 0.7f, s * 0.05f), strokeWidth = s * 0.1f)
-            }
-        }
+    val res = when (id) {
+        "archer" -> R.drawable.ic_build_archer
+        "ballista" -> R.drawable.ic_build_ballista
+        "catapult" -> R.drawable.ic_build_catapult
+        "wall" -> R.drawable.ic_build_wall
+        "house" -> R.drawable.ic_build_house
+        "lumber" -> R.drawable.ic_build_lumber
+        else -> R.drawable.ic_build_quarry
     }
+    Image(painterResource(res), contentDescription = nameOf(id), modifier = modifier)
 }
 
 @Composable
@@ -461,7 +432,7 @@ private fun SelectionPanel(c: GameController, s: SelectedInfo) {
     Panel(Modifier.width(220.dp)) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(s.name, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                Text(s.name, color = Color.White, fontFamily = GameFont, fontSize = 19.sp, modifier = Modifier.weight(1f))
                 Text("✕", color = TextDim, fontSize = 16.sp, modifier = Modifier.clickable { c.deselect() }.padding(4.dp))
             }
             if (s.maxLevel > 1) Text("Level ${s.level}/${s.maxLevel}", color = TextDim, fontSize = 12.sp)

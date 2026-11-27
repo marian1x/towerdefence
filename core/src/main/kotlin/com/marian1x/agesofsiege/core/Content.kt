@@ -93,7 +93,7 @@ object Content {
 
     val enemies: List<EnemyDef> = listOf(
         EnemyDef("raider", "Raider", hp = 36f, speed = 1.45f, armor = Armor.LIGHT, bounty = 3, keepDamage = 1, scale = 1f),
-        EnemyDef("wolf", "Wolf Rider", hp = 50f, speed = 2.5f, armor = Armor.LIGHT, bounty = 5, keepDamage = 2, scale = 1.1f),
+        EnemyDef("outrider", "Outrider", hp = 50f, speed = 2.5f, armor = Armor.LIGHT, bounty = 5, keepDamage = 2, scale = 1.1f),
         EnemyDef("brute", "Axe Brute", hp = 130f, speed = 0.95f, armor = Armor.HEAVY, bounty = 7, keepDamage = 3, scale = 1.35f),
         EnemyDef("warlord", "Marauder Warlord", hp = 800f, speed = 0.75f, armor = Armor.HEAVY, bounty = 60, keepDamage = 10, scale = 1.9f),
     )
@@ -169,7 +169,7 @@ object Content {
     fun waveComposition(wave: Int): List<Pair<String, Int>> {
         val list = mutableListOf<Pair<String, Int>>()
         list += "raider" to (5 + 2 * wave)
-        if (wave >= 4) list += "wolf" to (wave - 2)
+        if (wave >= 4) list += "outrider" to (wave - 2)
         if (wave >= 3) list += "brute" to ((wave - 1) / 2)
         if (wave % 5 == 0) list += "warlord" to (wave / 5)
         return list
@@ -181,7 +181,7 @@ object Content {
         var t = 0f
         var g = 0
         for ((id, count) in waveComposition(wave)) {
-            val gap = when (id) { "wolf" -> 0.6f; "brute" -> 1.3f; "warlord" -> 3f; else -> 0.8f }
+            val gap = when (id) { "outrider" -> 0.6f; "brute" -> 1.3f; "warlord" -> 3f; else -> 0.8f }
             repeat(count) {
                 out += SpawnEntry(t, id, g % gates)
                 g++

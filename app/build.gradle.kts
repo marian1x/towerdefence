@@ -51,6 +51,8 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.filament.android)
     implementation(libs.filamat.android)
+    implementation(libs.gltfio.android)
+    implementation(libs.filament.utils.android)
     implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
