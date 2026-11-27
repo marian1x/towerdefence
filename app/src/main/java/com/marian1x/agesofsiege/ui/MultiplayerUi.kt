@@ -1,6 +1,8 @@
 package com.marian1x.agesofsiege.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -41,6 +43,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,14 +59,23 @@ import com.marian1x.agesofsiege.game.GameController
 import com.marian1x.agesofsiege.game.MpSession
 import com.marian1x.agesofsiege.game.Overlay
 import com.marian1x.agesofsiege.net.LanDiscovery
+import com.marian1x.agesofsiege.net.RelayEndpoint
+import com.marian1x.agesofsiege.net.RelayInvite
 import com.marian1x.agesofsiege.net.localIpAddresses
+import com.marian1x.agesofsiege.net.validRelayHostKey
 
 @Composable
-private fun TextFieldRow(value: String, onChange: (String) -> Unit, label: String, numbers: Boolean = false) {
+private fun TextFieldRow(
+    value: String,
+    onChange: (String) -> Unit,
+    label: String,
+    keyboardType: KeyboardType = KeyboardType.Text,
+) {
     OutlinedTextField(
         value = value, onValueChange = onChange, singleLine = true,
         label = { Text(label) },
-        keyboardOptions = if (numbers) KeyboardOptions(keyboardType = KeyboardType.Uri) else KeyboardOptions.Default,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        visualTransformation = if (keyboardType == KeyboardType.Password) PasswordVisualTransformation() else VisualTransformation.None,
         colors = OutlinedTextFieldDefaults.colors(
             focusedTextColor = Color.White, unfocusedTextColor = Color.White,
             focusedBorderColor = Gold, unfocusedBorderColor = PanelBorder, cursorColor = Gold,
@@ -72,10 +85,11 @@ private fun TextFieldRow(value: String, onChange: (String) -> Unit, label: Strin
     )
 }
 
-/** "Play with a friend": host or join a game on the same Wi-Fi, then the lobby. */
+/** Host or join a game over Wi-Fi or through an internet relay. */
 @Composable
 fun MultiplayerPanel(c: GameController) {
     val session = c.mp
+    var connectionMode by remember { mutableIntStateOf(0) }
     val close = {
         if (c.mp?.phase != MpSession.Phase.PLAYING) c.cancelMatch()
         c.hud.overlay = Overlay.NONE
@@ -86,8 +100,13 @@ fun MultiplayerPanel(c: GameController) {
                 Text(session.status, color = Color(0xFFFFB070), fontSize = 13.sp)
                 Spacer(Modifier.height(6.dp))
             }
-            if (Build.VERSION.SDK_INT < 37) SetupTabs(c)
-            else LocalNetworkPermission { SetupTabs(c) }
+            ChipRow(listOf("SAME WI-FI", "ONLINE"), connectionMode) { connectionMode = it }
+            Spacer(Modifier.height(8.dp))
+            when {
+                connectionMode == 1 -> SetupTabs(c, online = true, retryJoin = session != null)
+                Build.VERSION.SDK_INT >= 37 -> LocalNetworkPermission { SetupTabs(c, online = false, retryJoin = session != null) }
+                else -> SetupTabs(c, online = false, retryJoin = session != null)
+            }
         } else {
             Lobby(c, session)
         }
@@ -134,22 +153,32 @@ private fun LocalNetworkPermission(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun SetupTabs(c: GameController) {
-    var tab by remember { mutableIntStateOf(0) }
+private fun SetupTabs(c: GameController, online: Boolean, retryJoin: Boolean) {
+    var tab by remember(online) { mutableIntStateOf(if (retryJoin) 1 else 0) }
     var name by remember { mutableStateOf(c.hud.settings.lordName.takeIf { it != "Lord of the Keep" } ?: "") }
-    Text("Both phones must be on the same Wi-Fi.", color = TextDim, fontSize = 12.sp)
-    Spacer(Modifier.height(8.dp))
     ChipRow(listOf("HOST A GAME", "JOIN A GAME"), tab) { tab = it }
     Spacer(Modifier.height(8.dp))
     TextFieldRow(name, { name = it.take(18) }, "Your name")
-    if (tab == 0) HostSetup(c, name) else JoinSetup(c, name)
+    when {
+        tab == 0 -> HostSetup(c, name, online)
+        online -> JoinOnlineSetup(c, name)
+        else -> JoinSetup(c, name)
+    }
 }
 
 @Composable
-private fun HostSetup(c: GameController, name: String) {
+private fun HostSetup(c: GameController, name: String, online: Boolean) {
     var mode by remember { mutableStateOf(MatchMode.VERSUS) }
     var difficulty by remember { mutableStateOf(Difficulty.NORMAL) }
     var pace by remember { mutableStateOf(Pace.STANDARD) }
+    var address by remember { mutableStateOf(c.prefs.relayEndpoint) }
+    var hostKey by remember { mutableStateOf("") }
+    val endpoint = if (online) RelayEndpoint.parse(address) else null
+    if (online) {
+        Spacer(Modifier.height(8.dp))
+        TextFieldRow(address, { address = it.take(280) }, "Relay server hostname", KeyboardType.Uri)
+        TextFieldRow(hostKey, { hostKey = it.take(128) }, "Relay host key", KeyboardType.Password)
+    }
     SectionLabel("Mode")
     ChipRow(MatchMode.entries.map { it.label }, mode.ordinal) { mode = MatchMode.entries[it] }
     Text(
@@ -162,8 +191,25 @@ private fun HostSetup(c: GameController, name: String) {
     SectionLabel("Game pace")
     ChipRow(Pace.entries.map { it.label }, pace.ordinal) { pace = Pace.entries[it] }
     Spacer(Modifier.height(12.dp))
-    MenuButton("HOST GAME", Modifier.fillMaxWidth(), primary = true) { c.hostMatch(name, mode, difficulty, pace) }
+    MenuButton(
+        "HOST GAME",
+        Modifier.fillMaxWidth(),
+        primary = true,
+        enabled = !online || (endpoint != null && validRelayHostKey(hostKey.trim())),
+    ) { c.hostMatch(name, mode, difficulty, pace, endpoint, hostKey.trim()) }
     Text("Your single-player game stays saved and untouched.", color = TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+}
+
+@Composable
+private fun JoinOnlineSetup(c: GameController, name: String) {
+    var inviteText by remember { mutableStateOf("") }
+    val invite = RelayInvite.parse(inviteText)
+    Spacer(Modifier.height(8.dp))
+    TextFieldRow(inviteText, { inviteText = it.take(320) }, "Paste your friend's invite", KeyboardType.Uri)
+    Spacer(Modifier.height(8.dp))
+    MenuButton("JOIN", Modifier.fillMaxWidth(), primary = true, enabled = invite != null) {
+        invite?.let { c.joinOnlineMatch(name, it) }
+    }
 }
 
 @Composable
@@ -190,7 +236,7 @@ private fun JoinSetup(c: GameController, name: String) {
         }
     }
     SectionLabel("Or type the host's address")
-    TextFieldRow(ip, { ip = it.take(40) }, "e.g. 192.168.1.23", numbers = true)
+    TextFieldRow(ip, { ip = it.take(40) }, "e.g. 192.168.1.23", KeyboardType.Uri)
     Spacer(Modifier.height(8.dp))
     MenuButton("JOIN", Modifier.fillMaxWidth(), primary = true, enabled = ip.isNotBlank()) {
         val address = ip.trim()
@@ -206,12 +252,25 @@ private fun Lobby(c: GameController, s: MpSession) {
     Text(s.status, color = Color.White, fontSize = 15.sp)
     Spacer(Modifier.height(8.dp))
     if (s.isHost) {
-        val ips = remember { localIpAddresses(context) }
-        Text(
-            if (ips.isEmpty()) "Connect to Wi-Fi so your friend can find you."
-            else "Your friend can also join by typing: ${ips.joinToString(" or ", transform = s::joinAddress)}",
-            color = TextDim, fontSize = 12.sp,
-        )
+        if (s.isOnline) {
+            s.onlineInvite?.let { invite ->
+                var copied by remember(invite) { mutableStateOf(false) }
+                Text("Ask your friend to open Online → Join a game and paste the invite.", color = TextDim, fontSize = 12.sp)
+                Spacer(Modifier.height(6.dp))
+                MenuButton(if (copied) "INVITE COPIED" else "COPY INVITE", Modifier.fillMaxWidth()) {
+                    context.getSystemService(ClipboardManager::class.java)
+                        ?.setPrimaryClip(ClipData.newPlainText("Ages of Siege invite", invite))
+                    copied = true
+                }
+            }
+        } else {
+            val ips = remember { localIpAddresses(context) }
+            Text(
+                if (ips.isEmpty()) "Connect to Wi-Fi so your friend can find you."
+                else "Your friend can also join by typing: ${ips.joinToString(" or ", transform = s::joinAddress)}",
+                color = TextDim, fontSize = 12.sp,
+            )
+        }
         s.setup?.let { setup ->
             SectionLabel("Match")
             Text("${setup.mode.label} · ${setup.difficulty.label} raiders · ${setup.pace.label} pace", color = Color.White, fontSize = 13.sp)
@@ -277,6 +336,7 @@ internal fun WaitingForFriend(c: GameController) {
                 when {
                     ended -> s.status
                     s.isHost -> "The game is paused. Your friend can reconnect from their match screen."
+                    s.isOnline -> "The game is paused. Check your internet connection and reconnect."
                     else -> "The game is paused. Keep both phones on the same Wi-Fi, then reconnect."
                 },
                 color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp),
@@ -288,7 +348,7 @@ internal fun WaitingForFriend(c: GameController) {
                 }
                 MenuButton("LEAVE MATCH", danger = true) { c.leaveMatch() }
             }
-            if (!ended && !s.isHost && s.status.isNotBlank()) {
+            if (!ended && (!s.isHost || s.isOnline) && s.status.isNotBlank()) {
                 Text(s.status, color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
             }
         }

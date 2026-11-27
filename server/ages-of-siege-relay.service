@@ -1,0 +1,16 @@
+[Unit]
+Description=Ages of Siege multiplayer relay
+After=network.target
+
+[Service]
+EnvironmentFile=/etc/ages-of-siege/relay.env
+ExecStart=/usr/bin/node /opt/ages-of-siege/relay.mjs
+Restart=on-failure
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

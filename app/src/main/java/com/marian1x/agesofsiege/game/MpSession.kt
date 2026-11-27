@@ -18,15 +18,21 @@ import com.marian1x.agesofsiege.core.Pace
 import com.marian1x.agesofsiege.core.World
 import com.marian1x.agesofsiege.net.Connection
 import com.marian1x.agesofsiege.net.LanHost
+import com.marian1x.agesofsiege.net.RelayEndpoint
+import com.marian1x.agesofsiege.net.RelayHost
+import com.marian1x.agesofsiege.net.RelayInvite
 import com.marian1x.agesofsiege.net.connectTo
+import com.marian1x.agesofsiege.net.joinRelay
+import com.marian1x.agesofsiege.net.onlineConnectionError
 import java.net.Socket
 import java.util.UUID
 
-/** A two-player LAN match. The host simulates the shared realm and each phone simulates its base. */
+/** A two-player match. The host simulates the shared realm and each phone simulates its base. */
 class MpSession private constructor(
     private val c: GameController,
     val isHost: Boolean,
     val myName: String,
+    val isOnline: Boolean = false,
 ) {
     enum class Phase { CONNECTING, LOBBY, PLAYING, ENDED }
 
@@ -47,6 +53,10 @@ class MpSession private constructor(
     private var difficulty = Difficulty.NORMAL
     private var pace = Pace.STANDARD
     private var lanHost: LanHost? = null
+    private var relayHost: RelayHost? = null
+    private var guestInvite: RelayInvite? = null
+    private var relayReady by mutableStateOf(false)
+    val onlineInvite get() = relayHost?.invite?.takeIf { relayReady }?.toString()
     private var realm: MatchRealm? = null
     private var link: Connection? = null
     private var hostAddress = ""
@@ -63,18 +73,44 @@ class MpSession private constructor(
     companion object {
         private const val TIMEOUT_MS = 7000L
 
-        fun host(c: GameController, context: Context, name: String, mode: MatchMode, difficulty: Difficulty, pace: Pace) =
-            MpSession(c, true, name).apply {
+        fun host(
+            c: GameController,
+            context: Context,
+            name: String,
+            mode: MatchMode,
+            difficulty: Difficulty,
+            pace: Pace,
+            endpoint: RelayEndpoint? = null,
+            hostKey: String = "",
+        ) = MpSession(c, true, name, isOnline = endpoint != null).apply {
                 this.mode = mode
                 this.difficulty = difficulty
                 this.pace = pace
                 phase = Phase.LOBBY
                 status = "Opening the game…"
-                lanHost = LanHost(context, name, ::onIncoming).also { host ->
-                    host.start(
-                        onReady = { status = "Waiting for a friend to join…" },
-                        onError = { close(); status = it },
-                    )
+                if (endpoint == null) {
+                    lanHost = LanHost(context, name, ::onIncoming).also { host ->
+                        host.start(
+                            onReady = { status = "Waiting for a friend to join…" },
+                            onError = { close(); status = it },
+                        )
+                    }
+                } else {
+                    relayHost = RelayHost(
+                        invite = RelayInvite.create(endpoint),
+                        key = hostKey,
+                        onReady = {
+                            relayReady = true
+                            status = if (phase == Phase.PLAYING) "Room is ready for your friend to reconnect."
+                            else "Room is ready. Send the invite to your friend."
+                        },
+                        onIncoming = ::onIncoming,
+                        onError = { error, retrying ->
+                            relayReady = false
+                            if (!retrying) close()
+                            status = if (retrying) "$error Retrying…" else error
+                        },
+                    ).also { it.listen() }
                 }
             }
 
@@ -82,6 +118,12 @@ class MpSession private constructor(
             MpSession(c, false, name).apply {
                 hostAddress = host
                 hostPort = port
+                reconnect()
+            }
+
+        fun joinOnline(c: GameController, name: String, invite: RelayInvite) =
+            MpSession(c, false, name, isOnline = true).apply {
+                guestInvite = invite
                 reconnect()
             }
     }
@@ -95,8 +137,8 @@ class MpSession private constructor(
     fun reconnect() {
         if (isHost || phase == Phase.ENDED || connecting || peerConnected) return
         connecting = true
-        status = "Connecting to $hostAddress…"
-        connectTo(hostAddress, hostPort) { result ->
+        status = if (isOnline) "Joining the room…" else "Connecting to $hostAddress…"
+        val connected: (Result<Socket>) -> Unit = { result ->
             result.onSuccess { socket ->
                 if (phase == Phase.ENDED) {
                     runCatching { socket.close() }
@@ -110,11 +152,14 @@ class MpSession private constructor(
             }.onFailure {
                 connecting = false
                 if (phase != Phase.ENDED) {
-                    status = "Couldn't reach $hostAddress. Check that the host is on the same Wi-Fi."
+                    status = if (isOnline) onlineConnectionError(it)
+                    else "Couldn't reach $hostAddress. Check that the host is on the same Wi-Fi."
                     if (setup == null) phase = Phase.ENDED
                 }
             }
         }
+        val invite = guestInvite
+        if (invite != null) joinRelay(invite, connected) else connectTo(hostAddress, hostPort, connected)
     }
 
     private fun onIncoming(socket: Socket) {
@@ -253,6 +298,8 @@ class MpSession private constructor(
                 status = "Waiting for a friend to join…"
                 // Keep the lobby setup so the same guest can recover a dropped connection.
             }
+            relayReady = false
+            relayHost?.listen(rejoining = true)
         } else {
             status = reason
             if (setup == null) phase = Phase.ENDED
@@ -374,5 +421,7 @@ class MpSession private constructor(
         link = null
         lanHost?.stop()
         lanHost = null
+        relayHost?.stop()
+        relayHost = null
     }
 }

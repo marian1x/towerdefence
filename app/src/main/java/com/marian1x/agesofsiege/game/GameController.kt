@@ -72,6 +72,9 @@ class Prefs(context: Context) {
     var highQuality by mutableStateOf(sp.getBoolean("hq", true))
     var damageNumbers by mutableStateOf(sp.getBoolean("dmg", true))
     var cameraShake by mutableStateOf(sp.getBoolean("shake", true))
+    var relayEndpoint: String
+        get() = sp.getString("relayEndpoint", "").orEmpty()
+        set(value) { sp.edit().putString("relayEndpoint", value).apply() }
 
     fun save() {
         sp.edit().putBoolean("hq", highQuality).putBoolean("dmg", damageNumbers).putBoolean("shake", cameraShake).apply()
@@ -224,14 +227,27 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     val inMatch: Boolean get() = campaign.mp != null
 
-    fun hostMatch(name: String, mode: com.marian1x.agesofsiege.core.MatchMode, difficulty: com.marian1x.agesofsiege.core.Difficulty, pace: com.marian1x.agesofsiege.core.Pace) {
+    fun hostMatch(
+        name: String,
+        mode: com.marian1x.agesofsiege.core.MatchMode,
+        difficulty: com.marian1x.agesofsiege.core.Difficulty,
+        pace: com.marian1x.agesofsiege.core.Pace,
+        endpoint: com.marian1x.agesofsiege.net.RelayEndpoint? = null,
+        hostKey: String = "",
+    ) {
         mp?.close()
-        mp = MpSession.host(this, context, name.ifBlank { "Host" }, mode, difficulty, pace)
+        if (endpoint != null) prefs.relayEndpoint = endpoint.toString()
+        mp = MpSession.host(this, context, name.ifBlank { "Host" }, mode, difficulty, pace, endpoint, hostKey)
     }
 
     fun joinMatch(name: String, host: String, port: Int) {
         mp?.close()
         mp = MpSession.join(this, name.ifBlank { "Guest" }, host.trim(), port)
+    }
+
+    fun joinOnlineMatch(name: String, invite: com.marian1x.agesofsiege.net.RelayInvite) {
+        mp?.close()
+        mp = MpSession.joinOnline(this, name.ifBlank { "Guest" }, invite)
     }
 
     /** Guest: dial the host again after a dropped connection (the base is kept). */

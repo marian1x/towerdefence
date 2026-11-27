@@ -16,6 +16,7 @@ import com.marian1x.agesofsiege.core.NetCodec
 import com.marian1x.agesofsiege.core.NetMsg
 import java.io.BufferedReader
 import java.io.BufferedWriter
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.Inet4Address
@@ -27,6 +28,7 @@ import kotlin.concurrent.thread
 
 private const val TAG = "AgesOfSiege.Net"
 private const val SERVICE_TYPE = "_agesofsiege._tcp."
+private const val MAX_FRAME_CHARS = 1_048_576
 private val main = Handler(Looper.getMainLooper())
 
 /**
@@ -57,7 +59,7 @@ class Connection(
             try {
                 val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
                 while (!closed) {
-                    val line = reader.readLine() ?: break
+                    val line = reader.readGameFrame() ?: break
                     if (line.isBlank()) continue
                     val msg = try {
                         NetCodec.decode(line)
@@ -116,6 +118,20 @@ class Connection(
             main.postDelayed({ runCatching { socket.close() } }, 1000)
         }
         main.post { onClosed(this, reason) }
+    }
+}
+
+private fun BufferedReader.readGameFrame(): String? {
+    val frame = StringBuilder()
+    while (true) {
+        when (val next = read()) {
+            -1 -> return null
+            '\n'.code -> return frame.toString()
+            else -> {
+                if (frame.length == MAX_FRAME_CHARS) throw IOException("Game message is too large")
+                frame.append(next.toChar())
+            }
+        }
     }
 }
 
