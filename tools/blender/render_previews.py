@@ -79,6 +79,10 @@ ICON_SET = {
     "house": lambda: load("house_1"),
     "lumber": lambda: load("lumber_1"),
     "quarry": lambda: load("quarry_1"),
+    "barracks": lambda: load("barracks_1"),
+    "unit_swordsman": lambda: load("swordsman", pose="idle", frame=4),
+    "unit_bowman": lambda: load("archer_crew", pose="holding-both-shoot", frame=4),
+    "unit_knight": lambda: load("warlord", pose="idle", frame=4),
 }
 
 
@@ -87,13 +91,17 @@ def icons():
         c.reset()
         objs = fn()
         c.setup_render(res=256, transparent=True)
-        c.frame_camera(objs, margin=1.0, yaw=35.0, pitch=28.0)
-        c.render(os.path.join(ICONS, "ic_build_%s.png" % key))
+        if key.startswith("unit_"):
+            # Skinned meshes report loose bounds; characters are ~1 unit tall from the origin.
+            c.frame_camera(box=((0.0, 0.0, 0.48), 1.05), margin=1.0, yaw=30.0, pitch=15.0)
+        else:
+            c.frame_camera(objs, margin=1.0, yaw=35.0, pitch=28.0)
+        c.render(os.path.join(ICONS, ("ic_%s.png" if key.startswith("unit_") else "ic_build_%s.png") % key))
 
 
 def chars():
     c.reset()
-    for i, name in enumerate(["raider", "brute", "outrider", "warlord", "archer_crew"]):
+    for i, name in enumerate(["raider", "brute", "outrider", "warlord", "archer_crew", "swordsman", "rival"]):
         load(name, x=i * 1.3, z=0.0, pose="walk", frame=8)
         load(name, x=i * 1.3, z=1.6, pose="holding-right", frame=2)
     c.setup_render(res=1200, transparent=False)

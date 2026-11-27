@@ -14,6 +14,10 @@ data class SavedStructure(
     val invested: Cost = Cost(),
 )
 
+/** A soldier's persistent state (at home, or travelling with an expedition). */
+@Serializable
+data class TroopData(val defId: String, var hp: Float, var xp: Int = 0, var kills: Int = 0)
+
 @Serializable
 data class SaveData(
     val version: Int = 1,
@@ -24,6 +28,7 @@ data class SaveData(
     val wave: Int,
     val bestWave: Int = 0,
     val structures: List<SavedStructure>,
+    val troops: List<TroopData> = emptyList(),
 ) {
     fun toJson(): String = json.encodeToString(serializer(), this)
 

@@ -55,6 +55,9 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import com.marian1x.agesofsiege.R
+import androidx.activity.compose.BackHandler
+import com.marian1x.agesofsiege.game.Overlay
+import com.marian1x.agesofsiege.game.Screen
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -68,33 +71,77 @@ import com.marian1x.agesofsiege.game.SelectedInfo
 import kotlinx.coroutines.delay
 import kotlin.time.Duration.Companion.seconds
 
-private val PanelBg = Color(0xE01A1F2B)
-private val PanelBorder = Color(0x40FFFFFF)
-private val Gold = Color(0xFFFFC94D)
-private val Danger = Color(0xFFFF5A4A)
-private val TextDim = Color(0xB3FFFFFF)
+internal val PanelBg = Color(0xE01A1F2B)
+internal val PanelBorder = Color(0x40FFFFFF)
+internal val Gold = Color(0xFFFFC94D)
+internal val Danger = Color(0xFFFF5A4A)
+internal val TextDim = Color(0xB3FFFFFF)
 
 /** Lilita One (SIL Open Font License) – chunky display font for titles and numbers. */
-private val GameFont = FontFamily(Font(R.font.lilita_one))
+internal val GameFont = FontFamily(Font(R.font.lilita_one))
 
 @Composable
 fun GameScreen(c: GameController) {
+    val hud = c.hud
+    BackHandler(enabled = hud.screen != Screen.MENU || hud.overlay != Overlay.NONE) {
+        when {
+            hud.overlay == Overlay.SETTINGS || hud.overlay == Overlay.NEW_GAME || hud.overlay == Overlay.CONFIRM_RESTART ->
+                hud.overlay = if (hud.screen == Screen.MENU) Overlay.NONE else Overlay.PAUSE
+            hud.overlay != Overlay.NONE -> hud.overlay = Overlay.NONE
+            hud.screen == Screen.WORLD -> hud.screen = Screen.GAME
+            else -> hud.overlay = Overlay.PAUSE
+        }
+    }
     Box(Modifier.fillMaxSize()) {
         AndroidView(factory = { c.r3d.surfaceView }, modifier = Modifier.fillMaxSize())
-        // Camera gestures + taps on the 3D world.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTransformGestures { centroid, pan, zoom, _ ->
-                        if (pan != Offset.Zero) c.onPan(centroid.x, centroid.y, pan.x, pan.y)
-                        if (zoom != 1f) c.onZoom(zoom)
-                    }
+        when (hud.screen) {
+            Screen.GAME -> {
+                // Camera gestures + taps on the 3D world.
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTransformGestures { centroid, pan, zoom, _ ->
+                                if (pan != Offset.Zero) c.onPan(centroid.x, centroid.y, pan.x, pan.y)
+                                if (zoom != 1f) c.onZoom(zoom)
+                            }
+                        }
+                        .pointerInput(Unit) { detectTapGestures(onTap = { c.onTap(it.x, it.y) }) }
+                )
+                WorldOverlay(c)
+                Hud(c)
+            }
+            Screen.WORLD -> WorldMapScreen(c)
+            Screen.MENU -> MainMenu(c)
+        }
+        when (hud.overlay) {
+            Overlay.PAUSE -> PauseMenu(c)
+            Overlay.SETTINGS -> SettingsPanel(c)
+            Overlay.NEW_GAME -> NewGamePanel(c)
+            Overlay.CONFIRM_RESTART -> ConfirmRestart(c)
+            Overlay.ARMY -> ArmyPanel(c)
+            Overlay.NONE -> Unit
+        }
+        if (hud.screen != Screen.MENU) Toasts(c)
+    }
+}
+
+/** Short messages (rejections, reports) – shown on every in-game screen. */
+@Composable
+private fun Toasts(c: GameController) {
+    Box(Modifier.fillMaxSize().safeDrawingPadding().padding(top = 94.dp), contentAlignment = Alignment.TopCenter) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (t in c.hud.toasts) {
+                LaunchedEffect(t.id) {
+                    delay(3.seconds)
+                    c.dismissToast(t)
                 }
-                .pointerInput(Unit) { detectTapGestures(onTap = { c.onTap(it.x, it.y) }) }
-        )
-        WorldOverlay(c)
-        Hud(c)
+                Text(
+                    t.text, color = Color(t.color), fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xE0101420)).padding(horizontal = 12.dp, vertical = 5.dp),
+                )
+            }
+        }
     }
 }
 
@@ -174,25 +221,16 @@ private fun Hud(c: GameController) {
         // Top-center wave banner.
         WaveBanner(c, Modifier.align(Alignment.TopCenter))
         // Top-right controls.
-        Row(Modifier.align(Alignment.TopEnd), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            RoundButton(if (hud.paused) "▶" else "❚❚", onClick = c::togglePause)
-            RoundButton("${hud.speed}×", onClick = c::toggleSpeed, highlight = hud.speed > 1)
-        }
-        // Toasts.
-        Column(
-            Modifier.align(Alignment.TopCenter).padding(top = 84.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            for (t in hud.toasts) {
-                LaunchedEffect(t.id) {
-                    delay(2.6.seconds)
-                    c.dismissToast(t)
-                }
-                Text(
-                    t.text, color = Color(t.color), fontWeight = FontWeight.Bold, fontSize = 14.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xC0101420)).padding(horizontal = 12.dp, vertical = 5.dp),
-                )
+        Column(Modifier.align(Alignment.TopEnd), horizontalAlignment = Alignment.End) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                RoundButton(if (hud.paused) "▶" else "❚❚", onClick = c::togglePause)
+                RoundButton("${hud.speed}×", onClick = c::toggleSpeed, highlight = hud.speed > 1)
+                RoundButton("☰", onClick = { hud.overlay = Overlay.PAUSE })
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                NavButton("ARMY ${hud.garrison.values.sum() + hud.away}/${hud.armyCap}") { hud.overlay = Overlay.ARMY }
+                NavButton(if (hud.expeditionCount > 0) "WORLD •${hud.expeditionCount}" else "WORLD") { hud.screen = Screen.WORLD }
             }
         }
         // Mode hint.
@@ -225,7 +263,17 @@ private fun nameOf(defId: String) =
     if (Content.isTower(defId)) Content.tower(defId).name else Content.building(defId).name
 
 @Composable
-private fun Panel(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun NavButton(label: String, onClick: () -> Unit) {
+    Text(
+        label, fontFamily = GameFont, fontSize = 15.sp, color = Color.White,
+        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(PanelBg)
+            .border(1.dp, Gold.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp),
+    )
+}
+
+@Composable
+internal fun Panel(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Box(
         modifier
             .clip(RoundedCornerShape(14.dp))
@@ -334,7 +382,7 @@ private fun RoundButton(label: String, onClick: () -> Unit, highlight: Boolean =
     }
 }
 
-private val buildOptions = listOf("archer", "ballista", "catapult", "wall", "house", "lumber", "quarry")
+private val buildOptions = listOf("archer", "ballista", "catapult", "wall", "barracks", "house", "lumber", "quarry")
 
 @Composable
 private fun BuildBar(c: GameController, modifier: Modifier) {
@@ -373,7 +421,7 @@ private fun BuildCard(id: String, cost: Cost, selected: Boolean, affordable: Boo
 }
 
 @Composable
-private fun CostRow(cost: Cost, affordable: Boolean, fontSize: Int = 10) {
+internal fun CostRow(cost: Cost, affordable: Boolean, fontSize: Int = 10) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         val col = if (affordable) Color.White else Danger.copy(alpha = 0.9f)
         if (cost.gold > 0) { ResourceIcon(ResourceKind.GOLD, Modifier.size(9.dp)); Text("${cost.gold}", color = col, fontSize = fontSize.sp) }
@@ -391,6 +439,7 @@ private fun BuildIcon(id: String, modifier: Modifier) {
         "catapult" -> R.drawable.ic_build_catapult
         "wall" -> R.drawable.ic_build_wall
         "house" -> R.drawable.ic_build_house
+        "barracks" -> R.drawable.ic_build_barracks
         "lumber" -> R.drawable.ic_build_lumber
         else -> R.drawable.ic_build_quarry
     }

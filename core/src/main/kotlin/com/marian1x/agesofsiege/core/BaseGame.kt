@@ -49,6 +49,31 @@ class Enemy(
     var alive = true
     var lastTile = -1
     var slowTimer = 0f
+    var attackCd = 0f
+    /** True while fighting a troop (stands still). */
+    var engaged = false
+}
+
+/** A recruited soldier defending the base. */
+class Troop(
+    val id: Int,
+    val def: UnitDef,
+    var x: Float,
+    var y: Float,
+    var hp: Float,
+    var xp: Int,
+    var kills: Int,
+) {
+    var prevX = x
+    var prevY = y
+    var heading = 0f
+    var cooldown = 0f
+    var sinceAttack = 99f
+    var alive = true
+    /** True when moving (for walk animation). */
+    var moving = false
+    val rank get() = Content.rankFor(xp)
+    fun toData() = TroopData(def.id, hp, xp, kills)
 }
 
 class Projectile(
@@ -94,6 +119,10 @@ sealed class GameEvent {
     data class Built(val structureId: Int) : GameEvent()
     data class Removed(val structureId: Int) : GameEvent()
     data class Upgraded(val structureId: Int, val level: Int) : GameEvent()
+    data class TroopRecruited(val troopId: Int) : GameEvent()
+    data class TroopDied(val troopId: Int, val defId: String, val x: Float, val y: Float) : GameEvent()
+    /** Narrative message for the player (expeditions, rival news...). */
+    data class Report(val text: String, val good: Boolean) : GameEvent()
 }
 
 /** Every player action is a command. A server can later validate the same commands. */
@@ -103,6 +132,7 @@ sealed class Command {
     data class Sell(val structureId: Int) : Command()
     object StartWave : Command()
     data class CastVolley(val x: Float, val y: Float) : Command()
+    data class Recruit(val unitId: String) : Command()
 }
 
 sealed class CommandResult {
@@ -136,6 +166,16 @@ class BaseGame(val seed: Long = 1234L) {
     val obstacles = ArrayList<Obstacle>()
     val volleys = ArrayList<PendingVolley>()
     val events = ArrayList<GameEvent>()
+    val troops = ArrayList<Troop>()
+
+    /** Raider HP multiplier (difficulty, cleared camps) – set by the campaign. */
+    var hpModifier = 1f
+    /** Resource production multiplier (game pace) – set by the campaign. */
+    var productionMult = 1f
+    /** Rival soldiers that will join the next wave. */
+    var pendingRivalUnits = 0
+    /** Troops currently away on expeditions (count towards the army cap). */
+    var awayTroops = 0
 
     /** Entry gates on the map edge (tile coordinates). */
     val gates: List<Pair<Int, Int>> = listOf(0 to 3, 0 to 12, 12 to 0)
@@ -320,6 +360,21 @@ class BaseGame(val seed: Long = 1234L) {
                 CommandResult.Ok
             }
         }
+        is Command.Recruit -> {
+            val def = Content.unit(cmd.unitId)
+            when {
+                structures.values.none { it.defId == "barracks" } -> CommandResult.Rejected("Build a Barracks first")
+                troops.size + awayTroops >= armyCap() -> CommandResult.Rejected("Army is full – upgrade or build Barracks")
+                !res.canAfford(def.cost) -> CommandResult.Rejected("Not enough resources")
+                else -> {
+                    res.pay(def.cost)
+                    val t = Troop(nextId++, def, keep.x - 0.3f, keep.cy, def.hp, 0, 0)
+                    troops += t
+                    events += GameEvent.TroopRecruited(t.id)
+                    CommandResult.Ok
+                }
+            }
+        }
         is Command.CastVolley -> {
             if (volleyCooldown > 0f) CommandResult.Rejected("Volley recharging") else {
                 volleyCooldown = Content.VOLLEY_COOLDOWN
@@ -347,16 +402,18 @@ class BaseGame(val seed: Long = 1234L) {
             }
         }
         moveEnemies()
+        troopsAct()
         towersAct()
         moveProjectiles()
         updateVolleys()
         enemies.removeAll { !it.alive }
+        troops.removeAll { !it.alive }
         projectiles.removeAll { !it.alive }
         if (phase == Phase.ACTIVE && spawnQueue.isEmpty() && enemies.isEmpty()) waveCleared()
     }
 
     private fun produce() {
-        val perSec = 1f / 60f * DT
+        val perSec = 1f / 60f * DT * productionMult
         res.addScaled(Content.keepProduction, perSec)
         for (s in structures.values) if (s.kind == StructureKind.BUILDING) {
             res.addScaled(Content.building(s.defId).produces, perSec * Content.levelProductionMult(s.level))
@@ -366,7 +423,17 @@ class BaseGame(val seed: Long = 1234L) {
     private fun startWave() {
         phase = Phase.ACTIVE
         waveTime = 0f
-        spawnQueue = ArrayDeque(Content.waveSpawns(wave))
+        val spawns = ArrayList(Content.waveSpawns(wave))
+        if (pendingRivalUnits > 0) {
+            var t = (spawns.lastOrNull()?.time ?: 0f) + 2f
+            repeat(pendingRivalUnits) {
+                spawns += SpawnEntry(t, "rival", it % activeGates())
+                t += 1f
+            }
+            events += GameEvent.Report("The rival lord's soldiers join this attack!", false)
+            pendingRivalUnits = 0
+        }
+        spawnQueue = ArrayDeque(spawns)
         events += GameEvent.WaveStarted(wave)
     }
 
@@ -399,7 +466,7 @@ class BaseGame(val seed: Long = 1234L) {
         // Start just outside the map edge so raiders "march in".
         val sx = if (gx == 0) -0.6f else gx + 0.5f
         val sy = if (gy == 0) -0.6f else gy + 0.5f
-        val enemy = Enemy(nextId++, def, sx, sy + 0f, def.hp * Content.waveHpScale(wave), rng.range(-0.28f, 0.28f))
+        val enemy = Enemy(nextId++, def, sx, sy + 0f, def.hp * Content.waveHpScale(wave) * hpModifier, rng.range(-0.28f, 0.28f))
         enemy.x += rng.range(-0.2f, 0.2f) * (if (gx == 0) 0f else 1f)
         enemy.y += rng.range(-0.2f, 0.2f) * (if (gy == 0) 0f else 1f)
         enemies += enemy
@@ -411,6 +478,22 @@ class BaseGame(val seed: Long = 1234L) {
             if (!e.alive) continue
             e.prevX = e.x
             e.prevY = e.y
+            // Blocked by a soldier: stop and fight.
+            val foe = troops.firstOrNull { it.alive && dist(it.x, it.y, e.x, e.y) < 0.7f }
+            if (foe != null) {
+                e.engaged = true
+                e.heading = atan2(foe.x - e.x, foe.y - e.y)
+                if (e.attackCd > 0f) e.attackCd -= DT else {
+                    e.attackCd = 1f
+                    foe.hp -= e.def.damage
+                    if (foe.hp <= 0f) {
+                        foe.alive = false
+                        events += GameEvent.TroopDied(foe.id, foe.def.id, foe.x, foe.y)
+                    }
+                }
+                continue
+            }
+            e.engaged = false
             var tx = floor(e.x).toInt()
             var ty = floor(e.y).toInt()
             // Off-map (marching in): clamp to the entry tile.
@@ -485,6 +568,94 @@ class BaseGame(val seed: Long = 1234L) {
         }
     }
 
+    /** Where idle troops gather (in front of the Keep). */
+    fun rallyPoint(): Pair<Float, Float> = (keep.x - 1.3f) to keep.cy
+
+    fun armyCap(): Int = Content.ARMY_BASE_CAP +
+        structures.values.filter { it.defId == "barracks" }.sumOf { it.level } * Content.ARMY_CAP_PER_BARRACKS_LEVEL
+
+    fun garrison(): Map<String, Int> = troops.groupingBy { it.def.id }.eachCount()
+
+    /** Removes troops from the base to send them on an expedition (healthiest first). */
+    fun takeTroops(counts: Map<String, Int>): List<TroopData> {
+        val out = ArrayList<TroopData>()
+        for ((id, n) in counts) {
+            val pick = troops.filter { it.def.id == id }.sortedByDescending { it.hp }.take(n)
+            for (t in pick) {
+                troops.remove(t)
+                out += t.toData()
+            }
+        }
+        return out
+    }
+
+    /** Troops coming home from an expedition. */
+    fun returnTroops(list: List<TroopData>) {
+        for (d in list) {
+            if (!Content.isUnit(d.defId) || d.hp <= 0f) continue
+            troops += Troop(nextId++, Content.unit(d.defId), keep.x - 0.3f, keep.cy, d.hp, d.xp, d.kills)
+        }
+    }
+
+    private fun troopsAct() {
+        val (rx, ry) = rallyPoint()
+        for ((i, t) in troops.withIndex()) {
+            if (!t.alive) continue
+            t.prevX = t.x
+            t.prevY = t.y
+            t.moving = false
+            t.sinceAttack += DT
+            if (t.cooldown > 0f) t.cooldown -= DT
+            val homeX = rx - (i / 4) * 0.75f
+            val homeY = ry + ((i % 4) - 1.5f) * 0.75f
+            var target: Enemy? = null
+            var best = Float.MAX_VALUE
+            for (e in enemies) {
+                if (!e.alive) continue
+                if (dist(homeX, homeY, e.x, e.y) > Content.TROOP_AGGRO_RANGE + t.def.range) continue
+                val d = dist(t.x, t.y, e.x, e.y)
+                if (d < best) {
+                    best = d
+                    target = e
+                }
+            }
+            if (target != null) {
+                t.heading = atan2(target.x - t.x, target.y - t.y)
+                if (best > t.def.range) {
+                    moveToward(t, target.x, target.y)
+                } else if (t.cooldown <= 0f) {
+                    t.cooldown = 1f / t.def.attackRate
+                    t.sinceAttack = 0f
+                    val dmg = t.def.damage * Content.rankDamageMult(t.rank)
+                    if (t.def.range > 1.5f) {
+                        projectiles += Projectile(
+                            nextId++, t.id, "bowman", t.def.damageType, dmg, 0f, true, target.id,
+                            t.x, t.y, target.x, target.y, 11f,
+                        )
+                    } else {
+                        val dealt = damage(target, dmg, t.def.damageType, null, t)
+                        events += GameEvent.Hit(target.x, target.y, dealt, t.def.damageType, 0f)
+                    }
+                }
+            } else {
+                if (dist(t.x, t.y, homeX, homeY) > 0.05f) moveToward(t, homeX, homeY)
+                t.hp = min(t.def.hp, t.hp + 6f * DT)
+            }
+        }
+    }
+
+    private fun moveToward(t: Troop, x: Float, y: Float) {
+        val dx = x - t.x
+        val dy = y - t.y
+        val len = sqrt(dx * dx + dy * dy)
+        if (len < 1e-4f) return
+        val m = min(t.def.speed * DT, len)
+        t.x += dx / len * m
+        t.y += dy / len * m
+        t.heading = atan2(dx, dy)
+        t.moving = true
+    }
+
     private fun towersAct() {
         val d = flow.dist
         for (s in structures.values) {
@@ -556,12 +727,13 @@ class BaseGame(val seed: Long = 1234L) {
 
     private fun impact(p: Projectile) {
         val owner = structures[p.ownerId]
+        val troopOwner = if (owner == null) troops.firstOrNull { it.id == p.ownerId } else null
         if (p.splash > 0f) {
             for (e in enemies) if (e.alive && dist(e.x, e.y, p.x, p.y) <= p.splash) damage(e, p.damage, p.type, owner)
             events += GameEvent.Hit(p.x, p.y, p.damage.toInt(), p.type, p.splash)
         } else {
             val t = enemies.firstOrNull { it.id == p.targetId && it.alive } ?: return
-            val dealt = damage(t, p.damage, p.type, owner)
+            val dealt = damage(t, p.damage, p.type, owner, troopOwner)
             events += GameEvent.Hit(t.x, t.y, dealt, p.type, 0f)
         }
     }
@@ -578,7 +750,7 @@ class BaseGame(val seed: Long = 1234L) {
         }
     }
 
-    private fun damage(e: Enemy, raw: Float, type: DamageType, owner: Structure?): Int {
+    private fun damage(e: Enemy, raw: Float, type: DamageType, owner: Structure?, troop: Troop? = null): Int {
         val dealt = raw * Content.damageMultiplier(type, e.def.armor)
         e.hp -= dealt
         if (e.hp <= 0f && e.alive) {
@@ -591,12 +763,17 @@ class BaseGame(val seed: Long = 1234L) {
                 owner.kills++
                 if (owner.rank > before) events += GameEvent.RankUp(owner.id, owner.rank)
             }
+            if (troop != null) {
+                troop.xp += e.def.bounty * 3
+                troop.kills++
+            }
         }
         return dealt.toInt()
     }
 
     /** Enemies the player is about to face, by type. */
-    fun nextWavePreview(): List<Pair<String, Int>> = Content.waveComposition(wave)
+    fun nextWavePreview(): List<Pair<String, Int>> =
+        Content.waveComposition(wave) + (if (pendingRivalUnits > 0) listOf("rival" to pendingRivalUnits) else emptyList())
 
     fun drainEvents(): List<GameEvent> {
         val copy = ArrayList(events)
@@ -613,6 +790,7 @@ class BaseGame(val seed: Long = 1234L) {
         structures = structures.values.filter { it.kind != StructureKind.KEEP }.map {
             SavedStructure(it.defId, it.x, it.y, it.level, it.xp, it.kills, it.invested)
         },
+        troops = troops.map { it.toData() },
     )
 
     /** Rebuilds the base from a save. Waves restart from the PREP phase (time is paused while offline). */
@@ -638,6 +816,7 @@ class BaseGame(val seed: Long = 1234L) {
             s.invested = ss.invested
             addStructure(s)
         }
+        returnTroops(save.troops)
         recomputeFlow()
         phase = Phase.PREP
         countdown = WAVE_DELAY

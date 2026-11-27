@@ -131,11 +131,14 @@ def setup_render(res=512, transparent=True):
     scene.collection.objects.link(sun)
 
 
-def frame_camera(objs=None, margin=1.15, yaw=45.0, pitch=35.0):
-    """Orthographic 3/4 camera framing the given objects."""
-    lo, hi = bounds(objs)
-    center = (lo + hi) / 2
-    size = max((hi - lo).length, 0.01)
+def frame_camera(objs=None, margin=1.15, yaw=45.0, pitch=35.0, box=None):
+    """Orthographic 3/4 camera framing the given objects (or an explicit (center, size) box)."""
+    if box is not None:
+        center, size = Vector(box[0]), box[1]
+    else:
+        lo, hi = bounds(objs)
+        center = (lo + hi) / 2
+        size = max((hi - lo).length, 0.01)
     cam_data = bpy.data.cameras.new("Cam")
     cam_data.type = 'ORTHO'
     cam_data.ortho_scale = size * margin

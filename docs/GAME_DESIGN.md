@@ -3,7 +3,7 @@
 > Build a medieval stronghold, survive endless raider invasions, explore a living world, and race rival AI lords
 > through the ages — from catapults to tanks and jets.
 
-Status: **approved 2026-11-27**. Phase 0 (foundation) done, Phase 1 (vertical slice) in progress.
+Status: **approved 2026-11-27**. Phase 0–1 done; Phase 2 (world + troops) and the first rival are playable.
 
 ## Pillars
 - **Defend** — satisfying tower-defense battles (towers, walls, troops, commander abilities).
@@ -60,9 +60,9 @@ lives in data (`Content.kt`); the simulation never depends on Android.
 | Phase | Deliverable | Status |
 |---|---|---|
 | 0 Foundation | Kotlin modules, Compose + Filament, procedural diorama, CI | ✅ |
-| 1 "Hold the Keep" | Medieval base building, towers + walls, raider waves + boss, XP/ranks, coins, Volley ability, save/load | 🔨 playable prototype |
-| 2 World | Hex world, fog of war, scouts, resources, ruins, camps, outposts, marches, assault battles, Shop v1 | |
-| 3 Rivals + Gunpowder | AI lords, attacks both ways, Gunpowder era, research tree, tower evolution | |
+| 1 "Hold the Keep" | Medieval base building, towers + walls, raider waves + boss, XP/ranks, coins, Volley ability, save/load, main/pause/settings menus, restart | ✅ playable |
+| 2 World | World map (2D parchment v1), fog of war, scouting, caches, ruins, marauder camps, marches, auto-resolved battles; Barracks + troops (swordsman, bowman, knight) defending the base. Still to do: outposts, Shop v1, 3D world view | 🔨 first slice playable |
+| 3 Rivals + Gunpowder | First AI rival done (grows, makes contact, raids your base, can be conquered → vassal tribute). Still to do: more rivals, Gunpowder era, research tree, tower evolution | 🔨 started |
 | 4 Ages + polish | Industrial + Modern, air units, victory conditions, quests, tutorial, audio, balancing | |
 | 5 Friends | Private builds to share with friends (APK / internal testing) | |
 | 6 Online | Accounts, cloud saves, shared online world | |

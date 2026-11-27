@@ -10,6 +10,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.marian1x.agesofsiege.core.BaseGame
+import com.marian1x.agesofsiege.core.Campaign
+import com.marian1x.agesofsiege.core.CampaignSave
+import com.marian1x.agesofsiege.core.CampaignSettings
 import com.marian1x.agesofsiege.core.Command
 import com.marian1x.agesofsiege.core.CommandResult
 import com.marian1x.agesofsiege.core.Content
@@ -60,6 +63,21 @@ data class SelectedInfo(
 
 data class Toast(val id: Long, val text: String, val color: Long)
 
+enum class Screen { MENU, GAME, WORLD }
+enum class Overlay { NONE, PAUSE, SETTINGS, NEW_GAME, ARMY, CONFIRM_RESTART }
+
+/** Player preferences (device-local, not part of the save). */
+class Prefs(context: Context) {
+    private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    var highQuality by mutableStateOf(sp.getBoolean("hq", true))
+    var damageNumbers by mutableStateOf(sp.getBoolean("dmg", true))
+    var cameraShake by mutableStateOf(sp.getBoolean("shake", true))
+
+    fun save() {
+        sp.edit().putBoolean("hq", highQuality).putBoolean("dmg", damageNumbers).putBoolean("shake", cameraShake).apply()
+    }
+}
+
 /** Observable state for the Compose HUD. */
 class HudState {
     var gold by mutableIntStateOf(0)
@@ -78,6 +96,16 @@ class HudState {
     var selected by mutableStateOf<SelectedInfo?>(null)
     var preview by mutableStateOf<List<Pair<String, Int>>>(emptyList())
     val toasts = mutableStateListOf<Toast>()
+
+    var screen by mutableStateOf(Screen.MENU)
+    var overlay by mutableStateOf(Overlay.NONE)
+    var garrison by mutableStateOf<Map<String, Int>>(emptyMap())
+    var armyCap by mutableIntStateOf(0)
+    var away by mutableIntStateOf(0)
+    var hasBarracks by mutableStateOf(false)
+    var settings by mutableStateOf(CampaignSettings())
+    var expeditionCount by mutableIntStateOf(0)
+    val reports = mutableStateListOf<Pair<String, Boolean>>()
 }
 
 class GameController(private val context: Context) : Choreographer.FrameCallback {
@@ -88,8 +116,11 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     val frame = mutableIntStateOf(0)
     val floatingTexts = ArrayList<FloatingText>()
 
-    var game: BaseGame = loadOrNew()
+    val prefs = Prefs(context)
+    var campaign: Campaign = loadOrNew()
         private set
+    val game: BaseGame get() = campaign.base
+    val hasSave: Boolean get() = saveFile.exists()
 
     private val meshCache = HashMap<String, Mesh>()
     private val fx = Fx(r3d, mesh("cube") { Models.cube(this) })
@@ -111,12 +142,21 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         var z = 0f
     }
 
+    private class TroopVisual(val model: Model, val scale: Float) {
+        var animTime = Random.nextFloat() * 2f
+        var yaw = 0f
+        var x = 0f
+        var z = 0f
+    }
+
     private class Corpse(val model: Model, val x: Float, val z: Float, val yaw: Float, val scale: Float) {
         var t = 0f
     }
 
     private val structureVisuals = HashMap<Int, StructureVisual>()
     private val enemyVisuals = HashMap<Int, EnemyVisual>()
+    private val troopVisuals = HashMap<Int, TroopVisual>()
+    private val troopDiedIds = HashSet<Int>()
     private val corpses = ArrayList<Corpse>()
     private val diedIds = HashSet<Int>()
     private val projectileVisuals = HashMap<Int, Model>()
@@ -149,8 +189,14 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         buildWorld()
         r3d.camTargetX = 14f
         r3d.camTargetZ = 8.6f
+        r3d.setQuality(prefs.highQuality)
         refreshHud()
     }
+
+    /** The simulation only runs while playing (not on menus or open dialogs). */
+    private val simulating: Boolean
+        get() = hud.screen != Screen.MENU && !hud.paused &&
+            (hud.overlay == Overlay.NONE || hud.overlay == Overlay.ARMY)
 
     // ------------------------------------------------------------ lifecycle
 
@@ -175,35 +221,69 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     private val saveFile get() = File(context.filesDir, "base_save.json")
 
-    private fun loadOrNew(): BaseGame {
+    private fun loadOrNew(): Campaign {
         val f = File(context.filesDir, "base_save.json")
         if (f.exists()) {
             try {
-                val data = SaveData.fromJson(f.readText())
-                return BaseGame(data.seed).also { it.loadFrom(data) }
+                val text = f.readText()
+                return if (text.contains("\"base\"")) {
+                    val data = CampaignSave.fromJson(text)
+                    Campaign(data.seed, data.settings).also { it.loadFrom(data) }
+                } else {
+                    // Save from version 0.1 (base only): keep the base, start a fresh world around it.
+                    val data = SaveData.fromJson(text)
+                    Campaign(data.seed, CampaignSettings()).also { it.base.loadFrom(data) }
+                }
             } catch (t: Throwable) {
                 Log.w("AgesOfSiege", "Could not load save, starting fresh", t)
             }
         }
-        return BaseGame(System.currentTimeMillis() and 0xffffff)
+        return Campaign(System.currentTimeMillis() and 0xffffff, CampaignSettings())
     }
 
     fun save() {
         try {
-            saveFile.writeText(game.toSave().toJson())
+            saveFile.writeText(campaign.toSave().toJson())
         } catch (t: Throwable) {
             Log.w("AgesOfSiege", "Save failed", t)
         }
     }
 
-    fun newGame() {
+    /** Starts a brand-new campaign (also used by Restart). */
+    fun newGame(settings: CampaignSettings) {
         clearVisuals()
-        game = BaseGame(System.currentTimeMillis() and 0xffffff)
+        campaign = Campaign(System.currentTimeMillis() and 0xffffff, settings)
         buildWorld()
         hud.selected = null
         hud.mode = InputMode.Normal
+        hud.paused = false
+        hud.reports.clear()
+        hud.toasts.clear()
+        hud.overlay = Overlay.NONE
+        hud.screen = Screen.GAME
         save()
         refreshHud()
+    }
+
+    fun continueGame() {
+        hud.overlay = Overlay.NONE
+        hud.screen = Screen.GAME
+    }
+
+    fun toMainMenu() {
+        save()
+        hud.overlay = Overlay.NONE
+        hud.screen = Screen.MENU
+    }
+
+    fun updateCampaignSettings(s: CampaignSettings) {
+        campaign.updateSettings(s)
+        hud.settings = s
+    }
+
+    fun applyPrefs() {
+        prefs.save()
+        r3d.setQuality(prefs.highQuality)
     }
 
     // ------------------------------------------------------------ models
@@ -297,6 +377,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         structureVisuals.clear()
         for (v in enemyVisuals.values) models.release(v.model)
         enemyVisuals.clear()
+        for (v in troopVisuals.values) models.release(v.model)
+        troopVisuals.clear()
         for (c in corpses) models.release(c.model)
         corpses.clear()
         for (m in projectileVisuals.values) models.release(m)
@@ -316,11 +398,11 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         val dt = if (lastNanos == 0L) 0f else ((frameTimeNanos - lastNanos) / 1e9f).coerceIn(0f, 0.1f)
         lastNanos = frameTimeNanos
 
-        if (!hud.paused) {
+        if (simulating) {
             acc += dt * hud.speed
             var steps = 0
             while (acc >= BaseGame.DT && steps < 12) {
-                game.step()
+                campaign.step()
                 handleEvents(game.drainEvents())
                 acc -= BaseGame.DT
                 steps++
@@ -328,10 +410,17 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             if (steps == 12) acc = 0f
         }
         val alpha = (acc / BaseGame.DT).coerceIn(0f, 1f)
-        val simDt = if (hud.paused) 0f else dt * hud.speed
+        val simDt = if (!simulating) 0f else dt * hud.speed
+        if (hud.screen == Screen.MENU) {
+            // Slow cinematic orbit behind the main menu.
+            r3d.camYawDeg = (r3d.camYawDeg + dt * 4f) % 360f
+        } else if (r3d.camYawDeg != 0f) {
+            r3d.camYawDeg = 0f
+        }
 
         syncStructures(simDt)
         syncEnemies(alpha, simDt)
+        syncTroops(alpha, simDt)
         syncCorpses(simDt)
         syncProjectiles(alpha)
         syncOverlays(dt)
@@ -357,7 +446,48 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         shake = max(0f, shake - dt * 2.5f)
     }
 
-    private fun shakeOffset(): Float = if (shake > 0f) sin(game.time * 90f) * shake * 0.12f else 0f
+    private fun shakeOffset(): Float =
+        if (shake > 0f && prefs.cameraShake) sin(game.time * 90f) * shake * 0.12f else 0f
+
+    private fun troopModelName(defId: String) = when (defId) {
+        "bowman" -> "archer_crew"
+        "knight" -> "warlord"
+        else -> "swordsman"
+    }
+
+    private fun syncTroops(alpha: Float, dt: Float) {
+        val alive = HashSet<Int>()
+        for (t in game.troops) {
+            if (!t.alive) continue
+            alive += t.id
+            val v = troopVisuals.getOrPut(t.id) {
+                TroopVisual(models.acquire(troopModelName(t.def.id), 8), TROOP_SCALE).also { it.yaw = t.heading }
+            }
+            v.x = t.prevX + (t.x - t.prevX) * alpha
+            v.z = t.prevY + (t.y - t.prevY) * alpha
+            var dy = t.heading - v.yaw
+            while (dy > Math.PI) dy -= (2 * Math.PI).toFloat()
+            while (dy < -Math.PI) dy += (2 * Math.PI).toFloat()
+            v.yaw += dy * min(1f, dt * 10f)
+            v.animTime += dt
+            r3d.setTransform(v.model.root, v.x, 0f, v.z, yaw = v.yaw, scale = v.scale)
+            when {
+                t.sinceAttack < 0.5f && t.def.id == "bowman" -> v.model.animate("holding-both-shoot", t.sinceAttack, loop = false)
+                t.sinceAttack < 0.5f -> v.model.animate("attack-melee-right", t.sinceAttack, loop = false)
+                t.moving -> v.model.animate(if (t.def.id == "knight") "sprint" else "walk", v.animTime)
+                else -> v.model.animate("idle", v.animTime)
+            }
+        }
+        val it = troopVisuals.entries.iterator()
+        while (it.hasNext()) {
+            val (id, v) = it.next()
+            if (id !in alive) {
+                if (id in troopDiedIds) corpses += Corpse(v.model, v.x, v.z, v.yaw, v.scale) else models.release(v.model)
+                troopDiedIds.remove(id)
+                it.remove()
+            }
+        }
+    }
 
     private fun syncStructures(dt: Float) {
         val g = game
@@ -477,7 +607,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             val z = p.prevY + (p.y - p.prevY) * alpha
             val (_, h1) = projectileHeights(p.visual)
             val owner = g.structures[p.ownerId]
-            val h0 = owner?.let { structureVisuals[it.id]?.headY?.plus(0.25f) } ?: 1f
+            val h0 = owner?.let { structureVisuals[it.id]?.headY?.plus(0.25f) } ?: 0.5f
             val arc = when (p.visual) { "catapult" -> 2.4f; "archer" -> 0.5f; else -> 0.15f }
             val t = p.progress.coerceIn(0f, 1f)
             val y = h0 + (h1 - h0) * t + arc * 4f * t * (1f - t)
@@ -571,7 +701,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                 } else {
                     fx.burst(ev.x, 0.35f, ev.y, 4, 0xFFE2A0, glow = true, speed = 1.8f, up = 1.5f, size = 0.04f, life = 0.25f, glowIntensity = 2f)
                 }
-                if (ev.damage > 0 && ev.splash == 0f) floatingTexts += FloatingText(ev.x, 0.8f, ev.y, ev.damage.toString(), 0xFFFFFFFF.toInt())
+                if (ev.damage > 0 && ev.splash == 0f && prefs.damageNumbers) floatingTexts += FloatingText(ev.x, 0.8f, ev.y, ev.damage.toString(), 0xFFFFFFFF.toInt())
             }
             is GameEvent.EnemyDied -> {
                 diedIds += ev.enemyId
@@ -617,6 +747,20 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                 fx.burst(s.cx, 1f, s.cy, 16, 0x9FE3FF, glow = true, speed = 1.5f, up = 3f, size = 0.05f, life = 0.8f, gravity = 3f, glowIntensity = 2.5f)
             }
             is GameEvent.Removed -> Unit
+            is GameEvent.TroopRecruited -> {
+                val (rx, ry) = game.rallyPoint()
+                fx.burst(rx, 0.3f, ry, 12, 0x9FE3FF, glow = true, speed = 1.2f, up = 2.5f, size = 0.05f, life = 0.7f, glowIntensity = 2f)
+            }
+            is GameEvent.TroopDied -> {
+                troopDiedIds += ev.troopId
+                toast("A ${Content.unit(ev.defId).name} has fallen", 0xFFFFB0A0)
+            }
+            is GameEvent.Report -> {
+                toast(ev.text, if (ev.good) 0xFF7CFC9A else 0xFFFFB070)
+                hud.reports.add(0, ev.text to ev.good)
+                if (hud.reports.size > 30) hud.reports.removeAt(hud.reports.size - 1)
+                save()
+            }
         }
     }
 
@@ -646,6 +790,12 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         hud.volleyReady = 1f - g.volleyCooldown / Content.VOLLEY_COOLDOWN
         hud.preview = g.nextWavePreview()
         hud.selected = hud.selected?.let { sel -> g.structures[sel.id]?.let { info(it) } }
+        hud.garrison = g.garrison()
+        hud.armyCap = g.armyCap()
+        hud.away = g.awayTroops
+        hud.hasBarracks = g.structures.values.any { it.defId == "barracks" }
+        hud.settings = campaign.settings
+        hud.expeditionCount = campaign.expeditions.size
     }
 
     private fun info(s: Structure): SelectedInfo {
@@ -666,7 +816,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                 val d = Content.building(s.defId)
                 name = d.name; maxLevel = d.upgradeCosts.size + 1
                 val p = d.produces * Content.levelProductionMult(s.level)
-                stats = listOfNotNull(
+                stats = if (s.defId == "barracks") "Army capacity +${s.level * Content.ARMY_CAP_PER_BARRACKS_LEVEL}" else listOfNotNull(
                     p.gold.takeIf { it > 0 }?.let { "+$it gold/min" },
                     p.wood.takeIf { it > 0 }?.let { "+$it wood/min" },
                     p.stone.takeIf { it > 0 }?.let { "+$it stone/min" },
@@ -793,9 +943,29 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         hud.paused = !hud.paused
     }
 
+    fun recruit(unitId: String) {
+        val r = game.execute(Command.Recruit(unitId))
+        if (r is CommandResult.Rejected) toast(r.reason, 0xFFFFB0A0) else handleEvents(game.drainEvents())
+        refreshHud()
+    }
+
+    /** Sends troops to a world-map point of interest (or to scout an empty cell when poiId < 0). */
+    fun sendExpedition(counts: Map<String, Int>, poiId: Int, cellX: Int, cellY: Int): Boolean {
+        val r = if (poiId >= 0) campaign.sendExpedition(counts, poiId) else campaign.sendScouts(counts, cellX, cellY)
+        if (r is CommandResult.Rejected) {
+            toast(r.reason, 0xFFFFB0A0)
+            return false
+        }
+        toast("Your army marches out!", 0xFF7CFC9A)
+        save()
+        refreshHud()
+        return true
+    }
+
     companion object {
         /** Kenney mini characters are ~1 unit tall; raiders are drawn a bit over half a tile tall. */
         const val UNIT_VISUAL_SCALE = 0.8f
+        const val TROOP_SCALE = 0.72f
         const val WATER_LEVEL = -0.17f
         /** The Kenney arrow model points along -Z; projectiles are oriented along +Z. */
         const val ARROW_YAW_OFFSET = 0f

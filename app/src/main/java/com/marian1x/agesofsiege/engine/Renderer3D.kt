@@ -298,6 +298,13 @@ class Renderer3D(context: Context) {
             .build(engine)
     }
 
+    /** High = ambient occlusion, bloom and MSAA on; Low = faster for older phones. */
+    fun setQuality(high: Boolean) {
+        view.ambientOcclusionOptions = view.ambientOcclusionOptions.apply { enabled = high }
+        view.bloomOptions = view.bloomOptions.apply { enabled = high }
+        view.multiSampleAntiAliasingOptions = view.multiSampleAntiAliasingOptions.apply { enabled = high }
+    }
+
     fun litInstance(color: Int, material: Material = litMaterial, alpha: Float = 1f): MaterialInstance {
         val mi = material.createInstance()
         setTint(mi, color, alpha)

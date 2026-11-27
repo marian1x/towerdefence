@@ -317,6 +317,29 @@ def quarry(level):
     return fn
 
 
+def barracks(level):
+    def fn():
+        s = 0.8
+        place("town", "wall-door", rot=-90, scale=s)
+        place("town", "wall-window-stone", rot=0, scale=s)
+        place("town", "wall-window-stone", rot=180, scale=s)
+        place("town", "wall", rot=90, scale=s)
+        y = 1.0 * s
+        if level >= 2:
+            place("town", "wall-wood-window-shutters", y=y, rot=-90, scale=s)
+            place("town", "wall-wood", y=y, rot=0, scale=s)
+            place("town", "wall-wood", y=y, rot=180, scale=s)
+            place("town", "wall-wood", y=y, rot=90, scale=s)
+            y += 1.0 * s
+        place("town", "roof-gable", y=y, scale=s)
+        place("castle", "flag-banner-long", x=0.43, y=0.0, z=0.43, rot=90, scale=0.42)
+        place("castle", "flag-banner-long", x=-0.43, y=0.0, z=0.43, rot=90, scale=0.42)
+        if level >= 3:
+            place("castle", "flag", y=y + 0.45, rot=-90, scale=0.5)
+            place("town", "stall-bench", x=0.0, z=0.62, scale=0.4)
+    return fn
+
+
 # ------------------------------------------------------------------ projectiles & props
 
 def arrow():
@@ -381,6 +404,7 @@ def main():
         build_static("house_%d" % lvl, house(lvl))
         build_static("lumber_%d" % lvl, lumber(lvl))
         build_static("quarry_%d" % lvl, quarry(lvl))
+        build_static("barracks_%d" % lvl, barracks(lvl))
     build_static("ballista_head", weapon("weapon-ballista"))
     build_static("catapult_head", weapon("weapon-catapult"))
     build_static("wall_block", wall_block)
@@ -393,6 +417,8 @@ def main():
     character("outrider", "character-male-g", right="weapon-spear")
     character("warlord", "character-knight", right="weapon-sword", left="shield-rectangle")
     character("archer_crew", "character-soldier", left="weapon-bow")
+    character("swordsman", "character-soldier", right="weapon-sword", left="shield-round")
+    character("rival", "character-male-f", right="weapon-sword", left="shield-rectangle")
     with open(META_PATH, "w") as f:
         json.dump(meta, f, indent=1, sort_keys=True)
     print("META", META_PATH)
