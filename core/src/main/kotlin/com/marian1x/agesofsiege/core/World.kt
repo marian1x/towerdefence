@@ -19,8 +19,8 @@ enum class PoiKind(val label: String) {
 data class Poi(
     val id: Int,
     val kind: PoiKind,
-    val x: Int,
-    val y: Int,
+    var x: Int,
+    var y: Int,
     var power: Float,
     var loot: Cost,
     var cleared: Boolean = false,
@@ -39,8 +39,12 @@ class World(val seed: Long) {
     val terrain = Array(W * H) { Terrain.GRASS }
     val explored = BooleanArray(W * H)
     val pois = ArrayList<Poi>()
-    val home = 3 to H / 2
-    val rivalHome = W - 4 to H / 2
+    /** Your capital. In multiplayer each phone points this at its own player's capital. */
+    var home = 3 to H / 2
+    /** The other capital (AI rival, or the opponent in Versus). */
+    var rivalHome = W - 4 to H / 2
+    /** Co-op: the ally's capital, or null. */
+    var allyHome: Pair<Int, Int>? = null
 
     private val rng = Rng(seed)
 

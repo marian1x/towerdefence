@@ -52,6 +52,8 @@ class Enemy(
     var attackCd = 0f
     /** True while fighting a troop (stands still). */
     var engaged = false
+    /** Non-zero for soldiers of another player's assault (multiplayer). */
+    var assaultId = 0
 }
 
 /** A recruited soldier defending the base. */
@@ -123,6 +125,10 @@ sealed class GameEvent {
     data class TroopDied(val troopId: Int, val defId: String, val x: Float, val y: Float) : GameEvent()
     /** Narrative message for the player (expeditions, rival news...). */
     data class Report(val text: String, val good: Boolean) : GameEvent()
+    /** Another player's assault arrived at the gates. */
+    data class AssaultStarted(val assaultId: Int, val units: Int, val from: String) : GameEvent()
+    /** All soldiers of an assault are dead or reached the keep. */
+    data class AssaultEnded(val assaultId: Int, val total: Int, val killed: Int, val reached: Int) : GameEvent()
 }
 
 /** Every player action is a command. A server can later validate the same commands. */
@@ -176,6 +182,15 @@ class BaseGame(val seed: Long = 1234L) {
     var pendingRivalUnits = 0
     /** Troops currently away on expeditions (count towards the army cap). */
     var awayTroops = 0
+
+    // Multiplayer assaults: enemy soldiers sent by another player, spawned outside the wave cycle.
+    private class AssaultSpawn(var delay: Float, val gate: Int, val assaultId: Int, val enemyId: String, val hp: Float)
+    private class AssaultTrack(val total: Int, var killed: Int = 0, var reached: Int = 0)
+    private val assaultQueue = ArrayList<AssaultSpawn>()
+    private val assaults = HashMap<Int, AssaultTrack>()
+
+    /** Number of assaults still in progress (spawning or alive). */
+    val activeAssaults: Int get() = assaults.size
 
     /** Entry gates on the map edge (tile coordinates). */
     val gates: List<Pair<Int, Int>> = listOf(0 to 3, 0 to 12, 12 to 0)
@@ -401,6 +416,7 @@ class BaseGame(val seed: Long = 1234L) {
                 while (spawnQueue.isNotEmpty() && spawnQueue.first().time <= waveTime) spawn(spawnQueue.removeFirst())
             }
         }
+        stepAssaults()
         moveEnemies()
         troopsAct()
         towersAct()
@@ -409,7 +425,7 @@ class BaseGame(val seed: Long = 1234L) {
         enemies.removeAll { !it.alive }
         troops.removeAll { !it.alive }
         projectiles.removeAll { !it.alive }
-        if (phase == Phase.ACTIVE && spawnQueue.isEmpty() && enemies.isEmpty()) waveCleared()
+        if (phase == Phase.ACTIVE && spawnQueue.isEmpty() && enemies.none { it.assaultId == 0 }) waveCleared()
     }
 
     private fun produce() {
@@ -437,6 +453,44 @@ class BaseGame(val seed: Long = 1234L) {
         events += GameEvent.WaveStarted(wave)
     }
 
+    /**
+     * Another player's army attacks this base right now: [units] soldiers of [enemyId] with [hp] each,
+     * marching in through the open gates a second apart. Ends with [GameEvent.AssaultEnded].
+     */
+    fun launchAssault(assaultId: Int, units: Int, hp: Float, from: String, enemyId: String = "rival") {
+        if (units <= 0 || assaultId in assaults) return
+        assaults[assaultId] = AssaultTrack(units)
+        repeat(units) { assaultQueue += AssaultSpawn(1.5f + it * 0.9f, it % gates.size, assaultId, enemyId, hp) }
+        events += GameEvent.AssaultStarted(assaultId, units, from)
+    }
+
+    private fun stepAssaults() {
+        if (assaultQueue.isEmpty()) return
+        val it = assaultQueue.iterator()
+        while (it.hasNext()) {
+            val a = it.next()
+            a.delay -= DT
+            if (a.delay > 0f) continue
+            it.remove()
+            val def = Content.enemy(a.enemyId)
+            val (gx, gy) = gates[a.gate]
+            val sx = if (gx == 0) -0.6f else gx + 0.5f
+            val sy = if (gy == 0) -0.6f else gy + 0.5f
+            val enemy = Enemy(nextId++, def, sx, sy, a.hp, rng.range(-0.28f, 0.28f))
+            enemy.assaultId = a.assaultId
+            enemies += enemy
+        }
+    }
+
+    private fun assaultOutcome(assaultId: Int, killed: Boolean) {
+        val t = assaults[assaultId] ?: return
+        if (killed) t.killed++ else t.reached++
+        if (t.killed + t.reached >= t.total) {
+            assaults.remove(assaultId)
+            events += GameEvent.AssaultEnded(assaultId, t.total, t.killed, t.reached)
+        }
+    }
+
     private fun waveCleared() {
         val reward = Content.waveReward(wave)
         res.gold += reward
@@ -448,6 +502,10 @@ class BaseGame(val seed: Long = 1234L) {
     }
 
     private fun raidLost() {
+        // Attacking soldiers still standing when the keep falls count as having broken through.
+        for (e in enemies) if (e.alive && e.assaultId != 0) assaultOutcome(e.assaultId, killed = false)
+        for (a in assaultQueue) assaultOutcome(a.assaultId, killed = false)
+        assaultQueue.clear()
         events += GameEvent.RaidLost(wave)
         res.gold *= 0.8f
         res.wood *= 0.8f
@@ -539,6 +597,7 @@ class BaseGame(val seed: Long = 1234L) {
                 targetY = e.y.coerceIn(keep.y.toFloat() - 0.1f, (keep.y + keep.h).toFloat() + 0.1f)
                 if (dist(e.x, e.y, targetX, targetY) < 0.25f) {
                     e.alive = false
+                    if (e.assaultId != 0) assaultOutcome(e.assaultId, killed = false)
                     keepHp -= e.def.keepDamage
                     events += GameEvent.KeepHit(e.def.keepDamage, e.x, e.y)
                     if (keepHp <= 0) {
@@ -755,6 +814,7 @@ class BaseGame(val seed: Long = 1234L) {
         e.hp -= dealt
         if (e.hp <= 0f && e.alive) {
             e.alive = false
+            if (e.assaultId != 0) assaultOutcome(e.assaultId, killed = true)
             res.gold += e.def.bounty
             events += GameEvent.EnemyDied(e.id, e.def.id, e.x, e.y, e.def.bounty)
             if (owner != null) {

@@ -23,6 +23,12 @@ data class Expedition(
     var progress: Float = 0f,
     var returning: Boolean = false,
     var loot: Cost = Cost(),
+    /** Multiplayer: slot of the player who sent it (0 in single-player). */
+    val owner: Int = 0,
+    /** Multiplayer: slot of the player whose capital is attacked / reinforced, or -1. */
+    val targetPlayer: Int = -1,
+    /** Multiplayer: waiting at an enemy capital while the assault is fought out in their base. */
+    var besieging: Boolean = false,
 )
 
 @Serializable
@@ -110,17 +116,91 @@ class Campaign(val seed: Long, settings: CampaignSettings) {
         val cleared = world.pois.count { it.kind == PoiKind.CAMP && it.cleared }
         base.hpModifier = settings.difficulty.raidHp * max(0.7f, 1f - 0.03f * cleared)
         base.productionMult = settings.pace.mult
-        base.awayTroops = expeditions.sumOf { it.troops.size }
+        val mySlot = mp?.mySlot ?: 0
+        base.awayTroops = expeditions.sumOf { if (it.owner == mySlot) it.troops.size else 0 }
     }
 
     // -------------------------------------------------------------- simulation
 
     fun step() {
         base.step()
+        if (mp != null) return // the shared realm is simulated by the match host
         val dt = BaseGame.DT * settings.pace.mult
         worldTime += dt
         stepExpeditions(dt)
         stepRival(dt)
+    }
+
+    // -------------------------------------------------------------- multiplayer
+
+    /** This phone's view of a two-player match (null in single-player). */
+    class MpView(val setup: MatchSetup, val mySlot: Int) {
+        var players: List<MpPlayer> = setup.players
+        val mode get() = setup.mode
+        val me get() = players[mySlot]
+        val other get() = players.firstOrNull { it.slot != mySlot }
+    }
+
+    var mp: MpView? = null
+        private set
+
+    /** Turns this (fresh) campaign into this phone's side of a match. */
+    fun setupMultiplayer(setup: MatchSetup, mySlot: Int) {
+        val view = MpView(setup, mySlot)
+        mp = view
+        MatchRules.prepareWorld(world, setup.mode)
+        val me = setup.players[mySlot]
+        val other = setup.players.first { it.slot != mySlot }
+        world.home = me.home
+        if (setup.mode == MatchMode.VERSUS) {
+            // The "rival capital" landmark becomes the opponent's capital.
+            world.rivalHome = other.home
+            world.pois.firstOrNull { it.kind == PoiKind.RIVAL_CAPITAL }?.let { it.x = other.homeX; it.y = other.homeY }
+            rival = Rival(name = other.name, defense = other.defense, contact = true)
+        } else {
+            world.allyHome = other.home
+        }
+        for (i in world.explored.indices) world.explored[i] = false
+        world.reveal(me.homeX, me.homeY, 5)
+        if (setup.mode == MatchMode.COOP) world.reveal(other.homeX, other.homeY, 3)
+        expeditions.clear()
+        applyModifiers()
+    }
+
+    /** Applies the host's realm snapshot. */
+    fun applySnapshot(s: NetMsg.Snapshot) {
+        val view = mp ?: return
+        view.players = s.players
+        for (ps in s.pois) world.pois.firstOrNull { it.id == ps.id }?.let {
+            it.cleared = ps.cleared
+            it.power = ps.power
+            it.loot = ps.loot
+        }
+        expeditions.clear()
+        expeditions += s.expeditions
+        worldTime = s.worldTime
+        for (e in s.expeditions) {
+            if (e.owner != view.mySlot && view.mode == MatchMode.VERSUS) continue
+            val cell = e.path[e.progress.toInt().coerceIn(0, e.path.size - 1)]
+            world.reveal(cell % World.W, cell / World.W, 2)
+        }
+        if (view.mode == MatchMode.VERSUS) {
+            val o = view.other
+            if (o != null) rival = rival.copy(name = o.name, defense = o.defense, contact = true)
+            world.rivalPoi().power = rival.defense
+        } else {
+            s.rival?.let { rival = it }
+            world.pois.firstOrNull { it.kind == PoiKind.RIVAL_CAPITAL }?.power = rival.defense
+        }
+        applyModifiers()
+    }
+
+    /** Validates a march order and takes the soldiers out of the base (multiplayer: the host moves them). */
+    fun takeArmy(counts: Map<String, Int>): Pair<List<TroopData>?, String?> {
+        if (counts.values.none { it > 0 }) return null to "Choose at least one soldier"
+        val garrison = base.garrison()
+        if (counts.any { (id, n) -> n !in 0..(garrison[id] ?: 0) }) return null to "Invalid soldier count"
+        return base.takeTroops(counts) to null
     }
 
     private fun report(text: String, good: Boolean) {

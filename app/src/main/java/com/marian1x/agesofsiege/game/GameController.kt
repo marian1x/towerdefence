@@ -64,7 +64,7 @@ data class SelectedInfo(
 data class Toast(val id: Long, val text: String, val color: Long)
 
 enum class Screen { MENU, GAME, WORLD }
-enum class Overlay { NONE, PAUSE, SETTINGS, NEW_GAME, ARMY, CONFIRM_RESTART }
+enum class Overlay { NONE, PAUSE, SETTINGS, NEW_GAME, ARMY, CONFIRM_RESTART, MULTIPLAYER }
 
 /** Player preferences (device-local, not part of the save). */
 class Prefs(context: Context) {
@@ -210,8 +210,99 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     /** The simulation only runs while playing (not on menus or open dialogs). */
     private val simulating: Boolean
-        get() = hud.screen != Screen.MENU && !hud.paused &&
-            (hud.overlay == Overlay.NONE || hud.overlay == Overlay.ARMY)
+        get() = if (inMatch) {
+            mp?.running == true
+        } else {
+            hud.screen != Screen.MENU && !hud.paused && (hud.overlay == Overlay.NONE || hud.overlay == Overlay.ARMY)
+        }
+
+    // ------------------------------------------------------------ multiplayer
+
+    /** The current two-player session (lobby or match), or null. */
+    var mp by mutableStateOf<MpSession?>(null)
+        private set
+
+    val inMatch: Boolean get() = campaign.mp != null
+
+    fun hostMatch(name: String, mode: com.marian1x.agesofsiege.core.MatchMode, difficulty: com.marian1x.agesofsiege.core.Difficulty, pace: com.marian1x.agesofsiege.core.Pace) {
+        mp?.close()
+        mp = MpSession.host(this, context, name.ifBlank { "Host" }, mode, difficulty, pace)
+    }
+
+    fun joinMatch(name: String, host: String, port: Int) {
+        mp?.close()
+        mp = MpSession.join(this, name.ifBlank { "Guest" }, host.trim(), port)
+    }
+
+    /** Guest: dial the host again after a dropped connection (the base is kept). */
+    fun reconnectMatch() {
+        mp?.reconnect()
+    }
+
+    /** Leaves the lobby without playing. */
+    fun cancelMatch() {
+        mp?.close()
+        mp = null
+    }
+
+    /** Both phones enter the match: a fresh base for each, the shared realm from [setup]. */
+    internal fun beginMatch(session: MpSession, setup: com.marian1x.agesofsiege.core.MatchSetup, slot: Int) {
+        if (campaign.mp?.setup?.matchId == setup.matchId) {
+            // Reconnected to the same match: keep this phone's base as it is.
+            mp = session
+            hud.overlay = Overlay.NONE
+            toast("Reconnected!", 0xFF7CFC9A)
+            return
+        }
+        if (campaign.mp == null) save() // keep the single-player game safe
+        mp = session
+        clearVisuals()
+        campaign = Campaign(setup.seed, CampaignSettings(session.myName, setup.difficulty, setup.pace)).also { it.setupMultiplayer(setup, slot) }
+        buildWorld()
+        resetHudForNewGame()
+        val other = setup.players.first { it.slot != slot }.name
+        toast(if (setup.mode == com.marian1x.agesofsiege.core.MatchMode.VERSUS) "Match on! Defend your keep and raid $other's capital." else "Co-op with $other: defeat the rival lord together!", 0xFF7CFC9A)
+    }
+
+    /** Ends the match for this phone and goes back to the single-player game. */
+    fun leaveMatch() {
+        mp?.close()
+        mp = null
+        clearVisuals()
+        campaign = loadOrNew()
+        buildWorld()
+        resetHudForNewGame()
+        hud.screen = Screen.MENU
+        refreshHud()
+    }
+
+    private fun resetHudForNewGame() {
+        hud.selected = null
+        hud.mode = InputMode.Normal
+        hud.paused = false
+        hud.reports.clear()
+        hud.realmSel = null
+        realmRig.x = 0f; realmRig.z = 0f; realmRig.dist = 44f; realmRig.yaw = 0f
+        hud.toasts.clear()
+        hud.overlay = Overlay.NONE
+        hud.screen = Screen.GAME
+        refreshHud()
+    }
+
+    internal fun mpToast(text: String, good: Boolean) = toast(text, if (good) 0xFF7CFC9A else 0xFFFFB070)
+
+    internal fun mpReport(text: String, good: Boolean) {
+        toast(text, if (good) 0xFF7CFC9A else 0xFFFFB070)
+        hud.reports.add(0, text to good)
+        if (hud.reports.size > 30) hud.reports.removeAt(hud.reports.size - 1)
+    }
+
+    /** Co-op: give resources to the ally. */
+    fun sendSupplies(amount: Cost) {
+        val err = mp?.sendSupplies(amount)
+        if (err != null) toast(err, 0xFFFFB0A0) else toast("Supplies are on their way", 0xFF7CFC9A)
+        refreshHud()
+    }
 
     // ------------------------------------------------------------ lifecycle
 
@@ -230,6 +321,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     fun destroy() {
         stop()
+        mp?.close()
         models.destroy()
         r3d.destroy()
     }
@@ -257,6 +349,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     }
 
     fun save() {
+        if (campaign.mp != null) return // matches are not saved over the single-player game
         try {
             saveFile.writeText(campaign.toSave().toJson())
         } catch (t: Throwable) {
@@ -428,8 +521,9 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         val dt = if (lastNanos == 0L) 0f else ((frameTimeNanos - lastNanos) / 1e9f).coerceIn(0f, 0.1f)
         lastNanos = frameTimeNanos
 
+        mp?.tick(dt)
         if (simulating) {
-            acc += dt * hud.speed
+            acc += dt * (if (inMatch) 1 else hud.speed)
             var steps = 0
             while (acc >= BaseGame.DT && steps < 12) {
                 campaign.step()
@@ -440,7 +534,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             if (steps == 12) acc = 0f
         }
         val alpha = (acc / BaseGame.DT).coerceIn(0f, 1f)
-        val simDt = if (!simulating) 0f else dt * hud.speed
+        val simDt = if (!simulating) 0f else dt * (if (inMatch) 1 else hud.speed)
         syncView()
         if (hud.screen == Screen.MENU) {
             // Slow cinematic orbit behind the main menu.
@@ -812,6 +906,14 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                 hud.reports.add(0, ev.text to ev.good)
                 if (hud.reports.size > 30) hud.reports.removeAt(hud.reports.size - 1)
                 save()
+            }
+            is GameEvent.AssaultStarted -> {
+                toast("⚔ ${ev.from} attacks with ${ev.units} soldiers!", 0xFFFF7A59)
+                shake = max(shake, 0.4f)
+            }
+            is GameEvent.AssaultEnded -> {
+                mp?.onAssaultEnded(ev)
+                toast(if (ev.reached == 0) "Assault repelled – all ${ev.total} attackers fell!" else "${ev.reached} attackers broke through!", if (ev.reached == 0) 0xFF7CFC9A else 0xFFFF7A59)
             }
         }
     }
@@ -1192,6 +1294,24 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     /** Sends troops to a world-map point of interest (or to scout an empty cell when poiId < 0). */
     fun sendExpedition(counts: Map<String, Int>, poiId: Int, cellX: Int, cellY: Int): Boolean {
+        val view = campaign.mp
+        val session = mp
+        if (view != null && session != null) {
+            // Match: the host moves armies. Capitals are attacked (Versus) or reinforced (Co-op) as players.
+            val world = campaign.world
+            val poi = world.pois.firstOrNull { it.id == poiId }
+            val other = view.other?.slot ?: -1
+            val atOther = (poi?.kind == com.marian1x.agesofsiege.core.PoiKind.RIVAL_CAPITAL && view.mode == com.marian1x.agesofsiege.core.MatchMode.VERSUS) ||
+                (world.allyHome == (cellX to cellY))
+            val err = if (atOther) session.sendArmy(counts, -1, cellX, cellY, other) else session.sendArmy(counts, poiId, cellX, cellY, -1)
+            if (err != null) {
+                toast(err, 0xFFFFB0A0)
+                return false
+            }
+            toast(if (atOther && view.mode == com.marian1x.agesofsiege.core.MatchMode.COOP) "Reinforcements march to your ally!" else "Your army marches out!", 0xFF7CFC9A)
+            refreshHud()
+            return true
+        }
         val r = if (poiId >= 0) campaign.sendExpedition(counts, poiId) else campaign.sendScouts(counts, cellX, cellY)
         if (r is CommandResult.Rejected) {
             toast(r.reason, 0xFFFFB0A0)

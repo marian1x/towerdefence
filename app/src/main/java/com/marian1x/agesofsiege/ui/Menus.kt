@@ -164,6 +164,8 @@ fun MainMenu(c: GameController) {
             }
             MenuButton("NEW GAME", Modifier.fillMaxWidth(), primary = !c.hasSave) { c.hud.overlay = Overlay.NEW_GAME }
             Spacer(Modifier.height(10.dp))
+            MenuButton("PLAY WITH A FRIEND", Modifier.fillMaxWidth()) { c.hud.overlay = Overlay.MULTIPLAYER }
+            Spacer(Modifier.height(10.dp))
             MenuButton("SETTINGS", Modifier.fillMaxWidth()) { c.hud.overlay = Overlay.SETTINGS }
             if (updateWaiting || AppUpdater.availableRelease != null) {
                 Spacer(Modifier.height(14.dp))
@@ -216,16 +218,22 @@ fun NewGamePanel(c: GameController) {
 
 @Composable
 fun PauseMenu(c: GameController) {
-    GameDialog("Paused", width = 340, onClose = { c.hud.overlay = Overlay.NONE }) {
+    GameDialog(if (c.inMatch) "Match menu" else "Paused", width = 340, onClose = { c.hud.overlay = Overlay.NONE }) {
         Text("${c.hud.settings.lordName} · ${c.hud.settings.difficulty.label} · ${c.hud.settings.pace.label} pace", color = TextDim, fontSize = 13.sp)
         Spacer(Modifier.height(12.dp))
         MenuButton("RESUME", Modifier.fillMaxWidth(), primary = true) { c.hud.overlay = Overlay.NONE }
         Spacer(Modifier.height(8.dp))
         MenuButton("SETTINGS", Modifier.fillMaxWidth()) { c.hud.overlay = Overlay.SETTINGS }
         Spacer(Modifier.height(8.dp))
-        MenuButton("RESTART", Modifier.fillMaxWidth(), danger = true) { c.hud.overlay = Overlay.CONFIRM_RESTART }
-        Spacer(Modifier.height(8.dp))
-        MenuButton("MAIN MENU", Modifier.fillMaxWidth()) { c.toMainMenu() }
+        if (c.inMatch) {
+            Text("The match keeps running while this menu is open.", color = TextDim, fontSize = 12.sp)
+            Spacer(Modifier.height(8.dp))
+            MenuButton("LEAVE MATCH", Modifier.fillMaxWidth(), danger = true) { c.leaveMatch() }
+        } else {
+            MenuButton("RESTART", Modifier.fillMaxWidth(), danger = true) { c.hud.overlay = Overlay.CONFIRM_RESTART }
+            Spacer(Modifier.height(8.dp))
+            MenuButton("MAIN MENU", Modifier.fillMaxWidth()) { c.toMainMenu() }
+        }
     }
 }
 
@@ -256,7 +264,7 @@ fun SettingsPanel(c: GameController) {
         SectionLabel("Gameplay")
         ToggleRow("Show damage numbers", prefs.damageNumbers) { prefs.damageNumbers = it; c.applyPrefs() }
         ToggleRow("Camera shake", prefs.cameraShake) { prefs.cameraShake = it; c.applyPrefs() }
-        if (c.hud.screen != Screen.MENU) {
+        if (c.hud.screen != Screen.MENU && !c.inMatch) {
             SectionLabel("This realm")
             Text("Game pace", color = Color.White, fontSize = 14.sp)
             Spacer(Modifier.height(4.dp))

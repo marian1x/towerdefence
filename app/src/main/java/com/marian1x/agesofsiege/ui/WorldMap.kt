@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.marian1x.agesofsiege.core.Campaign
 import com.marian1x.agesofsiege.core.Content
+import com.marian1x.agesofsiege.core.MatchMode
 import com.marian1x.agesofsiege.core.Phase
 import com.marian1x.agesofsiege.core.Poi
 import com.marian1x.agesofsiege.core.PoiKind
@@ -124,7 +125,7 @@ private fun SidePanel(c: GameController, camp: Campaign) {
         } else {
             SelectionCard(c, sel.first, sel.second) { hud.realmSel = null }
         }
-        RivalStatus(camp)
+        if (camp.mp != null) MatchStatus(c) else RivalStatus(camp)
         if (sel == null) Legend()
         if (hud.reports.isNotEmpty()) {
             SectionLabel("Reports")
@@ -169,7 +170,12 @@ private fun RealmLabels(c: GameController) {
         }
 
         val home = c.realm.labelAnchor(world.home.first, world.home.second, 2.9f)
-        tag(home[0], home[1], home[2], c.hud.settings.lordName, 0xFF9FC8FF.toInt())
+        val view = camp.mp
+        tag(home[0], home[1], home[2], view?.me?.name ?: c.hud.settings.lordName, 0xFF9FC8FF.toInt())
+        world.allyHome?.let { (ax, ay) ->
+            val a = c.realm.labelAnchor(ax, ay, 2.9f)
+            tag(a[0], a[1], a[2], "🤝 ${view?.other?.name ?: "Ally"}", 0xFF7FB8FF.toInt())
+        }
         for (p in world.pois) {
             val visible = world.isExplored(p.x, p.y) || (p.kind == PoiKind.RIVAL_CAPITAL && camp.rival.contact)
             if (!visible) continue
@@ -187,7 +193,17 @@ private fun RealmLabels(c: GameController) {
         for (e in camp.expeditions) {
             val a = c.realm.armyAnchor(e)
             val power = e.troops.sumOf { Content.troopPower(it).toDouble() }.toInt()
-            tag(a[0], a[1], a[2], (if (e.returning) "↩ " else "") + "${e.troops.size} ⚔$power", if (e.returning) 0xFF9CE8A8.toInt() else 0xFFFFD34D.toInt())
+            val mine = view == null || e.owner == view.mySlot
+            if (!mine && view != null && !world.isExplored(e.path[e.progress.toInt().coerceIn(0, e.path.size - 1)] % com.marian1x.agesofsiege.core.World.W, e.path[e.progress.toInt().coerceIn(0, e.path.size - 1)] / com.marian1x.agesofsiege.core.World.W)) continue
+            val owner = if (mine) "" else "${view?.players?.getOrNull(e.owner)?.name ?: "?"} "
+            val color = when {
+                !mine && view?.mode == MatchMode.VERSUS -> 0xFFFF8A7A.toInt()
+                !mine -> 0xFF9FC8FF.toInt()
+                e.returning -> 0xFF9CE8A8.toInt()
+                else -> 0xFFFFD34D.toInt()
+            }
+            val state = if (e.besieging) "⚔ sieging " else if (e.returning) "↩ " else ""
+            tag(a[0], a[1], a[2], "$owner$state${e.troops.size} ⚔$power", color)
         }
     }
 }
@@ -208,6 +224,30 @@ private fun RivalStatus(camp: Campaign) {
     }
 }
 
+/** Multiplayer: the other player's status (and the AI rival in co-op). */
+@Composable
+private fun MatchStatus(c: GameController) {
+    val camp = c.campaign
+    val view = camp.mp ?: return
+    val other = view.other
+    val connected = c.mp?.peerConnected == true
+    SectionLabel(if (view.mode == MatchMode.VERSUS) "Opponent" else "Ally")
+    if (other != null) {
+        Text(
+            other.name, fontFamily = GameFont, fontSize = 16.sp,
+            color = if (view.mode == MatchMode.VERSUS) Color(0xFFFF8A7A) else Color(0xFF9FC8FF),
+        )
+        Text("Capital ⚔ ${other.defense.toInt()} · ${other.army} soldiers home · wave ${other.wave}", color = Color.White, fontSize = 12.sp)
+        Text(if (connected) "● connected" else "○ not connected – game paused", color = if (connected) Color(0xFF9CE8A8) else Color(0xFFFFC59A), fontSize = 12.sp)
+    }
+    if (view.mode == MatchMode.COOP) {
+        val r = camp.rival
+        SectionLabel("Common enemy")
+        Text(r.name, color = Color(0xFFFF8A7A), fontFamily = GameFont, fontSize = 16.sp)
+        Text(if (r.vassal) "Defeated – you won together!" else "Capital defense ⚔ ${r.defense.toInt()} · victories ${r.defeats}/3", color = Color.White, fontSize = 12.sp)
+    }
+}
+
 @Composable
 private fun Legend() {
     SectionLabel("Legend")
@@ -225,15 +265,18 @@ private fun SelectionCard(c: GameController, x: Int, y: Int, onDone: () -> Unit)
     val hud = c.hud
     val explored = world.isExplored(x, y)
     val terrain = world.terrainAt(x, y)
-    val poi = world.poiAt(x, y)?.takeIf { explored }
+    val poi = world.poiAt(x, y)?.takeIf { explored || (it.kind == PoiKind.RIVAL_CAPITAL && camp.rival.contact) }
     val isHome = x == world.home.first && y == world.home.second
+    val isAlly = world.allyHome == (x to y)
+    val view = camp.mp
     val counts = remember(x, y) { mutableStateMapOf<String, Int>() }
 
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF232A39)).padding(10.dp)) {
         val title = when {
             isHome -> "Your capital"
-            !explored -> "Unexplored land"
+            isAlly -> "${view?.other?.name ?: "Ally"}'s capital"
             poi != null -> if (poi.kind == PoiKind.RIVAL_CAPITAL) "${camp.rival.name}'s capital" else poi.kind.label
+            !explored -> "Unexplored land"
             else -> terrain.name.lowercase().replaceFirstChar { it.uppercase() }
         }
         Text(title, fontFamily = GameFont, fontSize = 18.sp, color = Color.White)
@@ -248,8 +291,18 @@ private fun SelectionCard(c: GameController, x: Int, y: Int, onDone: () -> Unit)
                 Text("Impassable terrain.", color = TextDim, fontSize = 12.sp)
                 return@Column
             }
+            isAlly -> {
+                Text("Your ally. Send soldiers to join their garrison, or share resources.", color = TextDim, fontSize = 12.sp)
+                SectionLabel("Send supplies")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    MenuButton("50 gold") { c.sendSupplies(com.marian1x.agesofsiege.core.Cost(gold = 50)) }
+                    MenuButton("50 wood") { c.sendSupplies(com.marian1x.agesofsiege.core.Cost(wood = 50)) }
+                    MenuButton("50 stone") { c.sendSupplies(com.marian1x.agesofsiege.core.Cost(stone = 50)) }
+                }
+            }
         }
-        if (poi != null) PoiDetails(camp, poi)
+        if (isAlly) Unit
+        else if (poi != null) PoiDetails(camp, poi)
         else Text(if (explored) "Send scouts to reveal the land around it." else "Unknown. Send soldiers to scout.", color = TextDim, fontSize = 12.sp)
         if (poi?.cleared == true && poi.kind != PoiKind.RIVAL_CAPITAL) return@Column
         if (poi?.kind == PoiKind.RIVAL_CAPITAL && camp.rival.vassal) return@Column
@@ -282,7 +335,13 @@ private fun SelectionCard(c: GameController, x: Int, y: Int, onDone: () -> Unit)
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             MenuButton("ALL") { for (u in Content.units) counts[u.id] = hud.garrison[u.id] ?: 0 }
-            MenuButton(if (poi != null) "MARCH" else "SCOUT", Modifier.weight(1f), primary = true, enabled = counts.values.sum() > 0) {
+            val action = when {
+                isAlly -> "REINFORCE"
+                poi?.kind == PoiKind.RIVAL_CAPITAL && view?.mode == MatchMode.VERSUS -> "ATTACK"
+                poi != null -> "MARCH"
+                else -> "SCOUT"
+            }
+            MenuButton(action, Modifier.weight(1f), primary = true, enabled = counts.values.sum() > 0) {
                 if (c.sendExpedition(counts.filterValues { it > 0 }, poi?.id ?: -1, x, y)) onDone()
             }
         }
@@ -302,7 +361,9 @@ private fun PoiDetails(camp: Campaign, poi: Poi) {
             if (poi.cleared) Text("Cleared.", color = Color(0xFF9CE8A8), fontSize = 12.sp)
             else Text("Guarded (defense ⚔ ${poi.power.toInt()}). Loot: $lootText", color = TextDim, fontSize = 12.sp)
         PoiKind.RIVAL_CAPITAL -> Text(
-            "Defense ⚔ ${camp.rival.defense.toInt()}. Win 3 assaults to make ${camp.rival.name} your vassal. Each victory plunders their treasury.",
+            if (camp.mp?.mode == MatchMode.VERSUS)
+                "Defense ⚔ ${camp.rival.defense.toInt()}. Your army storms ${camp.rival.name}'s base for real – their towers and soldiers fight back. Every attacker who reaches the keep steals 5% of their resources."
+            else "Defense ⚔ ${camp.rival.defense.toInt()}. Win 3 assaults to make ${camp.rival.name} your vassal. Each victory plunders their treasury.",
             color = TextDim, fontSize = 12.sp,
         )
     }

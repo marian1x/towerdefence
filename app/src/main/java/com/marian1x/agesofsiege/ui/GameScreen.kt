@@ -87,6 +87,10 @@ fun GameScreen(c: GameController) {
         when {
             hud.overlay == Overlay.SETTINGS || hud.overlay == Overlay.NEW_GAME || hud.overlay == Overlay.CONFIRM_RESTART ->
                 hud.overlay = if (hud.screen == Screen.MENU) Overlay.NONE else Overlay.PAUSE
+            hud.overlay == Overlay.MULTIPLAYER -> {
+                c.cancelMatch()
+                hud.overlay = Overlay.NONE
+            }
             hud.overlay != Overlay.NONE -> hud.overlay = Overlay.NONE
             hud.screen == Screen.WORLD -> c.openBase()
             else -> hud.overlay = Overlay.PAUSE
@@ -122,9 +126,13 @@ fun GameScreen(c: GameController) {
             Overlay.NEW_GAME -> NewGamePanel(c)
             Overlay.CONFIRM_RESTART -> ConfirmRestart(c)
             Overlay.ARMY -> ArmyPanel(c)
+            Overlay.MULTIPLAYER -> MultiplayerPanel(c)
             Overlay.NONE -> Unit
         }
-        if (hud.screen != Screen.MENU) Toasts(c)
+        if (hud.screen != Screen.MENU) {
+            WaitingForFriend(c)
+            Toasts(c)
+        }
     }
 }
 
@@ -215,18 +223,23 @@ private fun Hud(c: GameController) {
     val hud = c.hud
     Box(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp)) {
         // Top-left resources.
-        Row(Modifier.align(Alignment.TopStart), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            ResourceChip(ResourceKind.GOLD, hud.gold)
-            ResourceChip(ResourceKind.WOOD, hud.wood)
-            ResourceChip(ResourceKind.STONE, hud.stone)
+        Column(Modifier.align(Alignment.TopStart)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ResourceChip(ResourceKind.GOLD, hud.gold)
+                ResourceChip(ResourceKind.WOOD, hud.wood)
+                ResourceChip(ResourceKind.STONE, hud.stone)
+            }
+            MatchBadge(c, Modifier.padding(top = 6.dp))
         }
         // Top-center wave banner.
         WaveBanner(c, Modifier.align(Alignment.TopCenter))
         // Top-right controls.
         Column(Modifier.align(Alignment.TopEnd), horizontalAlignment = Alignment.End) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                RoundButton(if (hud.paused) "▶" else "❚❚", onClick = c::togglePause)
-                RoundButton("${hud.speed}×", onClick = c::toggleSpeed, highlight = hud.speed > 1)
+                if (!c.inMatch) {
+                    RoundButton(if (hud.paused) "▶" else "❚❚", onClick = c::togglePause)
+                    RoundButton("${hud.speed}×", onClick = c::toggleSpeed, highlight = hud.speed > 1)
+                }
                 RoundButton("☰", onClick = { hud.overlay = Overlay.PAUSE })
             }
             if (c.cameraRotated) {

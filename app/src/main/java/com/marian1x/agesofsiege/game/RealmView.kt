@@ -68,6 +68,7 @@ class RealmView(private val r3d: Renderer3D, private val models: ModelLibrary) {
 
     private val poiModels = HashMap<Int, Model>()
     private var homeModel: Model? = null
+    private var allyModel: Model? = null
 
     private class Army(val models: List<Model>) {
         var t = Random.nextFloat() * 2f
@@ -176,6 +177,7 @@ class RealmView(private val r3d: Renderer3D, private val models: ModelLibrary) {
         for (m in poiModels.values) models.release(m)
         poiModels.clear()
         homeModel?.let { models.release(it) }; homeModel = null
+        allyModel?.let { models.release(it) }; allyModel = null
         for (a in armies.values) a.models.forEach { models.release(it) }
         armies.clear()
     }
@@ -248,8 +250,8 @@ class RealmView(private val r3d: Renderer3D, private val models: ModelLibrary) {
         val rnd = Random(world.seed)
         val blocked = HashSet<Int>()
         for (p in world.pois) blocked += world.idx(p.x, p.y)
-        for (dy in -1..1) for (dx in -1..1) {
-            val hx = world.home.first + dx; val hy = world.home.second + dy
+        for (h in listOfNotNull(world.home, world.allyHome, world.rivalHome)) for (dy in -1..1) for (dx in -1..1) {
+            val hx = h.first + dx; val hy = h.second + dy
             if (world.inBounds(hx, hy)) blocked += world.idx(hx, hy)
         }
         for (y in 0 until World.H) for (x in 0 until World.W) {
@@ -386,6 +388,14 @@ class RealmView(private val r3d: Renderer3D, private val models: ModelLibrary) {
                 r3d.setTransform(it.root, cx, heightAt(cx, cz), cz, scale = 1.05f)
             }
         }
+        val ally = world.allyHome
+        if (ally != null && allyModel == null) {
+            allyModel = models.acquire("keep", 1, r3d.realmScene).also {
+                val cx = cellCenter(ally.first)
+                val cz = cellCenter(ally.second)
+                r3d.setTransform(it.root, cx, heightAt(cx, cz), cz, yaw = 0.4f, scale = 0.95f)
+            }
+        }
         for (p in world.pois) {
             val visible = (world.isExplored(p.x, p.y) || (p.kind == PoiKind.RIVAL_CAPITAL && camp.rival.contact)) &&
                 !(p.cleared && (p.kind == PoiKind.CACHE || p.kind == PoiKind.CAMP))
@@ -428,7 +438,8 @@ class RealmView(private val r3d: Renderer3D, private val models: ModelLibrary) {
         for (e in camp.expeditions) {
             alive += e.id
             val army = armies.getOrPut(e.id) {
-                val defs = e.troops.take(3).map { soldierModel(it.defId) }.ifEmpty { listOf("swordsman") }
+                val enemy = camp.mp?.let { it.mode == com.marian1x.agesofsiege.core.MatchMode.VERSUS && e.owner != it.mySlot } == true
+                val defs = e.troops.take(3).map { if (enemy) "rival" else soldierModel(it.defId) }.ifEmpty { listOf(if (enemy) "rival" else "swordsman") }
                 Army(defs.map { models.acquire(it, 4, r3d.realmScene) })
             }
             army.t += dt
@@ -440,7 +451,16 @@ class RealmView(private val r3d: Renderer3D, private val models: ModelLibrary) {
             val moving = len > 1e-3f
             if (moving) { dx /= len; dz /= len } else { dx = 0f; dz = 1f }
             val yaw = atan2(dx, dz)
+            // Enemy armies stay hidden under your fog of war.
+            val view = camp.mp
+            val hereCell = e.path[e.progress.toInt().coerceIn(0, e.path.size - 1)]
+            val hidden = view != null && e.owner != view.mySlot && view.mode == com.marian1x.agesofsiege.core.MatchMode.VERSUS &&
+                !camp.world.isExplored(hereCell % World.W, hereCell / World.W)
             army.models.forEachIndexed { k, m ->
+                if (hidden) {
+                    r3d.setTransform(m.root, here[0], -20f, here[1])
+                    return@forEachIndexed
+                }
                 // Small column: leader in front, two followers behind and to the sides.
                 val back = if (k == 0) 0f else 0.45f
                 val side = when (k) { 1 -> -0.3f; 2 -> 0.3f; else -> 0f }
@@ -471,8 +491,15 @@ class RealmView(private val r3d: Renderer3D, private val models: ModelLibrary) {
         pathMesh = null
         if (camp.expeditions.isEmpty()) return
         val b = MeshBuilder()
+        val view = camp.mp
         for (e in camp.expeditions) {
-            val color = if (e.returning) 0x7CFC9A else 0xFFC94D
+            val mine = view == null || e.owner == view.mySlot
+            val color = when {
+                !mine && view?.mode == com.marian1x.agesofsiege.core.MatchMode.VERSUS -> continue
+                !mine -> 0x7FB8FF
+                e.returning -> 0x7CFC9A
+                else -> 0xFFC94D
+            }
             var p = e.progress
             val end = e.path.size - 1f
             while (p < end) {
