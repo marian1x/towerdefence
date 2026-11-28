@@ -73,6 +73,9 @@ import com.marian1x.agesofsiege.core.TowerSpecialization
 import com.marian1x.agesofsiege.game.GameController
 import com.marian1x.agesofsiege.game.InputMode
 import com.marian1x.agesofsiege.game.SelectedInfo
+import com.marian1x.agesofsiege.game.UiSound
+import com.marian1x.agesofsiege.core.TargetPriority
+import androidx.compose.ui.draw.scale
 import kotlinx.coroutines.delay
 import kotlin.time.Duration.Companion.seconds
 
@@ -90,14 +93,17 @@ fun GameScreen(c: GameController) {
     val hud = c.hud
     BackHandler(enabled = hud.screen != Screen.MENU || hud.overlay != Overlay.NONE) {
         when {
+            hud.overlay == Overlay.RESULTS -> c.leaveBattle()
+            hud.overlay == Overlay.LEADERBOARD -> hud.overlay = if (c.battle?.finished == true) Overlay.RESULTS else Overlay.NONE
             hud.overlay == Overlay.SETTINGS || hud.overlay == Overlay.NEW_GAME || hud.overlay == Overlay.CONFIRM_RESTART ->
-                hud.overlay = if (hud.screen == Screen.MENU) Overlay.NONE else Overlay.PAUSE
+                hud.overlay = if (hud.screen == Screen.MENU || hud.screen == Screen.CAMPAIGN) Overlay.NONE else Overlay.PAUSE
             hud.overlay == Overlay.MULTIPLAYER -> {
                 c.cancelMatch()
                 hud.overlay = Overlay.NONE
             }
             hud.overlay != Overlay.NONE -> hud.overlay = Overlay.NONE
             hud.screen == Screen.WORLD -> c.openBase()
+            hud.screen == Screen.CAMPAIGN -> c.toMainMenu()
             else -> hud.overlay = Overlay.PAUSE
         }
     }
@@ -124,6 +130,7 @@ fun GameScreen(c: GameController) {
             }
             Screen.WORLD -> WorldMapScreen(c)
             Screen.MENU -> MainMenu(c)
+            Screen.CAMPAIGN -> CampaignMapScreen(c)
         }
         when (hud.overlay) {
             Overlay.PAUSE -> PauseMenu(c)
@@ -133,6 +140,12 @@ fun GameScreen(c: GameController) {
             Overlay.ARMY -> ArmyPanel(c)
             Overlay.MULTIPLAYER -> MultiplayerPanel(c)
             Overlay.SPECIALIZATION -> hud.selected?.let { SpecializationDialog(c, it) }
+            Overlay.BRIEFING -> hud.briefing?.let { BriefingDialog(c, it) }
+            Overlay.RESULTS -> hud.summary?.let { ResultsDialog(c, it) }
+            Overlay.PERKS -> PerksDialog(c)
+            Overlay.QUESTS -> QuestsDialog(c)
+            Overlay.DAILY -> DailyDialog(c)
+            Overlay.LEADERBOARD -> LeaderboardDialog(c)
             Overlay.NONE -> Unit
         }
         if (hud.screen != Screen.MENU) {
@@ -214,6 +227,18 @@ private fun WorldOverlay(c: GameController) {
             textPaint.textSize = (if (t.big) 20.sp else 13.sp).toPx()
             drawContext.canvas.nativeCanvas.drawText(t.text, pos[0], pos[1], textPaint)
         }
+        // Coins fly from fallen raiders to the gold counter (top-left).
+        val target = Offset(36.dp.toPx(), 28.dp.toPx())
+        val coinR = 5.dp.toPx()
+        for (f in c.coinFlies) {
+            val t = f.t.coerceIn(0f, 1f)
+            val e = t * t
+            val start = Offset(f.x, f.y)
+            val ctrl = Offset(f.x + (target.x - f.x) * 0.2f, minOf(f.y, target.y) - 80f)
+            val p = start * ((1 - e) * (1 - e)) + ctrl * (2 * e * (1 - e)) + target * (e * e)
+            drawCircle(Color(0xFFB8860B), coinR, p)
+            drawCircle(Gold, coinR * 0.75f, p)
+        }
     }
 }
 
@@ -233,17 +258,31 @@ private fun DrawScope.drawChevron(center: Offset, s: Float) {
 private fun Hud(c: GameController) {
     val hud = c.hud
     Box(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp)) {
+        if (hud.intro) {
+            Text(
+                "${hud.battleName.uppercase()}\nTap to skip", color = Color.White, fontFamily = GameFont, fontSize = 26.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.align(Alignment.Center).clip(RoundedCornerShape(14.dp)).background(Color(0x88101420)).padding(16.dp),
+            )
+            return@Box
+        }
         // Top-left resources.
         Column(Modifier.align(Alignment.TopStart)) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                ResourceChip(ResourceKind.GOLD, hud.gold)
-                ResourceChip(ResourceKind.WOOD, hud.wood)
-                ResourceChip(ResourceKind.STONE, hud.stone)
+                ResourceChip(ResourceKind.GOLD, hud.gold, pulse = hud.goldPulse)
+                if (!hud.goldOnly) {
+                    ResourceChip(ResourceKind.WOOD, hud.wood)
+                    ResourceChip(ResourceKind.STONE, hud.stone)
+                }
             }
             MatchBadge(c, Modifier.padding(top = 6.dp))
+            RacePanel(c, Modifier.padding(top = 6.dp))
         }
         // Top-center wave banner.
-        WaveBanner(c, Modifier.align(Alignment.TopCenter))
+        Column(Modifier.align(Alignment.TopCenter), horizontalAlignment = Alignment.CenterHorizontally) {
+            WaveBanner(c, Modifier)
+            BossBar(c, Modifier.padding(top = 6.dp))
+        }
         // Top-right controls.
         Column(Modifier.align(Alignment.TopEnd), horizontalAlignment = Alignment.End) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -256,7 +295,7 @@ private fun Hud(c: GameController) {
             Spacer(Modifier.height(6.dp))
             CameraControls(c)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (!hud.inBattle) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NavButton("ARMY ${hud.garrison.values.sum() + hud.away}/${hud.armyCap}") { hud.overlay = Overlay.ARMY }
                 NavButton(if (hud.expeditionCount > 0) "REALM •${hud.expeditionCount}" else "REALM") { c.openRealm() }
             }
@@ -270,7 +309,8 @@ private fun Hud(c: GameController) {
             if (mode !is InputMode.Normal) {
                 val text = when (mode) {
                     is InputMode.Build -> "Tap a tile to build ${nameOf(mode.defId)}"
-                    else -> "Tap the battlefield to fire an Arrow Volley"
+                    is InputMode.Cast -> "Tap the battlefield: ${mode.ability.description}"
+                    InputMode.Normal -> ""
                 }
                 Text(
                     text, color = Color.White, fontSize = 13.sp,
@@ -280,7 +320,7 @@ private fun Hud(c: GameController) {
             }
             BuildBar(c, Modifier)
         }
-        VolleyButton(c, Modifier.align(Alignment.BottomEnd))
+        AbilityBar(c, Modifier.align(Alignment.BottomEnd))
         AnimatedVisibility(
             visible = hud.selected != null,
             modifier = Modifier.align(Alignment.CenterEnd),
@@ -296,12 +336,12 @@ private fun nameOf(defId: String) =
     if (Content.isTower(defId)) Content.tower(defId).name else Content.building(defId).name
 
 @Composable
-private fun NavButton(label: String, onClick: () -> Unit) {
+internal fun NavButton(label: String, onClick: () -> Unit) {
     Text(
         label, fontFamily = GameFont, fontSize = 15.sp, color = Color.White,
         modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(PanelBg)
             .border(1.dp, Gold.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp),
+            .clickable { UiSound.click(); onClick() }.padding(horizontal = 14.dp, vertical = 8.dp),
     )
 }
 
@@ -318,10 +358,17 @@ internal fun Panel(modifier: Modifier = Modifier, content: @Composable () -> Uni
 enum class ResourceKind { GOLD, WOOD, STONE }
 
 @Composable
-private fun ResourceChip(kind: ResourceKind, amount: Int) {
+private fun ResourceChip(kind: ResourceKind, amount: Int, pulse: Int = 0) {
+    // The gold coin bounces when flying coins arrive.
+    val bounce = remember { androidx.compose.animation.core.Animatable(1f) }
+    LaunchedEffect(pulse) {
+        if (pulse == 0) return@LaunchedEffect
+        bounce.snapTo(1.35f)
+        bounce.animateTo(1f, androidx.compose.animation.core.spring(dampingRatio = 0.4f, stiffness = 600f))
+    }
     Panel {
         Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            ResourceIcon(kind, Modifier.size(18.dp))
+            ResourceIcon(kind, Modifier.size(18.dp).scale(bounce.value))
             Spacer(Modifier.width(6.dp))
             Text("$amount", color = Color.White, fontFamily = GameFont, fontSize = 18.sp)
         }
@@ -361,7 +408,7 @@ private fun WaveBanner(c: GameController, modifier: Modifier) {
     Panel(modifier.widthIn(min = 250.dp)) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("WAVE ${hud.wave}", color = Gold, fontFamily = GameFont, fontSize = 20.sp)
+                Text(if (hud.totalWaves > 0) "WAVE ${hud.wave}/${hud.totalWaves}" else "WAVE ${hud.wave}", color = Gold, fontFamily = GameFont, fontSize = 20.sp)
                 Spacer(Modifier.width(10.dp))
                 if (hud.phase == Phase.PREP) {
                     Text("in ${hud.countdown}s", color = TextDim, fontSize = 14.sp)
@@ -381,7 +428,7 @@ private fun WaveBanner(c: GameController, modifier: Modifier) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("KEEP", color = TextDim, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(6.dp))
-                val f = hud.keepHp / Content.KEEP_MAX_HP.toFloat()
+                val f = (hud.keepHp / hud.keepMax.toFloat()).coerceIn(0f, 1f)
                 Box(Modifier.width(170.dp).height(7.dp).clip(RoundedCornerShape(4.dp)).background(Color(0x55000000))) {
                     Box(
                         Modifier.fillMaxHeight().fillMaxWidth(f).clip(RoundedCornerShape(4.dp))
@@ -390,6 +437,10 @@ private fun WaveBanner(c: GameController, modifier: Modifier) {
                 }
                 Spacer(Modifier.width(6.dp))
                 Text("${hud.keepHp}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                if (hud.inBattle) {
+                    Spacer(Modifier.width(10.dp))
+                    StarTracker(c)
+                }
             }
             if (hud.phase == Phase.PREP && hud.preview.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
@@ -436,12 +487,13 @@ private val townCards = listOf("barracks", "house", "lumber", "quarry")
 private fun BuildBar(c: GameController, modifier: Modifier) {
     val hud = c.hud
     var town by remember { mutableStateOf(false) }
+    if (hud.inBattle) town = false
     Row(
-        modifier.padding(end = 92.dp),
+        modifier.padding(end = (70 * hud.abilities.size + 22).dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (!hud.inBattle) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             BuildCategory("Defense", !town) {
                 if (town && hud.mode is InputMode.Build) c.selectBuild(null)
                 town = false
@@ -456,8 +508,9 @@ private fun BuildBar(c: GameController, modifier: Modifier) {
                 Modifier.weight(1f, fill = false).horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                for (id in if (town) townCards else defenseCards) {
-                    val cost = if (town) Content.building(id).cost else Content.tower(id).cost
+                for (id in if (town) townCards else hud.towers.ifEmpty { defenseCards }) {
+                    val raw = if (town) Content.building(id).cost else Content.tower(id).cost
+                    val cost = if (hud.goldOnly) raw.toGold() else raw
                     val selected = (hud.mode as? InputMode.Build)?.defId == id
                     val affordable = hud.gold >= cost.gold && hud.wood >= cost.wood && hud.stone >= cost.stone
                     BuildCard(id, cost, selected, affordable) { c.selectBuild(id) }
@@ -500,6 +553,7 @@ private fun BuildCard(id: String, cost: Cost, selected: Boolean, affordable: Boo
             "ballista", "repeater" -> "Anti-armor"
             "catapult", "brazier" -> "Area damage"
             "frost" -> "Slows raiders"
+            "banner" -> "Boosts towers"
             "wall" -> "Blocks paths"
             "barracks" -> "Train troops"
             "house" -> "Gold income"
@@ -524,7 +578,7 @@ internal fun CostRow(cost: Cost, affordable: Boolean, fontSize: Int = 10) {
 /** Build-card icons rendered from the real 3D models by tools/blender/render_previews.py. */
 @Composable
 private fun BuildIcon(id: String, modifier: Modifier) {
-    if (id == "frost" || id == "brazier" || id == "repeater") {
+    if (id == "frost" || id == "brazier" || id == "repeater" || id == "banner") {
         NewTowerIcon(id, modifier)
         return
     }
@@ -539,36 +593,6 @@ private fun BuildIcon(id: String, modifier: Modifier) {
         else -> R.drawable.ic_build_quarry
     }
     Image(painterResource(res), contentDescription = nameOf(id), modifier = modifier)
-}
-
-@Composable
-private fun VolleyButton(c: GameController, modifier: Modifier) {
-    val hud = c.hud
-    val armed = hud.mode == InputMode.Volley
-    val ready = hud.volleyReady >= 1f
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            Modifier.size(76.dp).clip(CircleShape)
-                .background(if (armed) Color(0xFF5A2A18) else PanelBg)
-                .border(2.dp, if (ready) Gold else PanelBorder, CircleShape)
-                .clickable { c.armVolley() },
-            contentAlignment = Alignment.Center,
-        ) {
-            Canvas(Modifier.size(76.dp)) {
-                val s = size.minDimension
-                // Three falling arrows.
-                for (i in -1..1) {
-                    val x = s / 2 + i * s * 0.17f
-                    drawLine(Color(0xFFE2C89A), Offset(x - s * 0.08f, s * 0.22f), Offset(x + s * 0.06f, s * 0.68f), strokeWidth = s * 0.04f)
-                    drawCircle(Color(0xFFDCE3EA), s * 0.045f, Offset(x + s * 0.07f, s * 0.71f))
-                }
-                if (!ready) {
-                    drawArc(Color(0xB0000000), -90f + 360f * hud.volleyReady, 360f * (1f - hud.volleyReady), true, Offset.Zero, size)
-                }
-            }
-        }
-        Text("VOLLEY", color = if (ready) Gold else TextDim, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
-    }
 }
 
 @Composable
@@ -600,9 +624,24 @@ private fun SelectionPanel(c: GameController, s: SelectedInfo) {
                 val specialization = s.specialization
                 if (specialization != null) {
                     Text("${specialization.label} · ${specialization.benefit}", color = Gold, fontSize = 11.sp)
-                } else if (s.level >= Content.SPECIALIZATION_LEVEL) {
+                } else if (s.level >= Content.SPECIALIZATION_LEVEL && !s.support) {
                     Spacer(Modifier.height(5.dp))
                     NavButton("SPECIALIZE") { c.hud.overlay = Overlay.SPECIALIZATION }
+                }
+                if (!s.support) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("TARGET", color = TextDim, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        for (p in TargetPriority.entries) {
+                            val on = p == s.priority
+                            Text(
+                                p.label, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                                color = if (on) Color(0xFF1A1F2B) else Color.White,
+                                modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(if (on) Gold else Color(0xFF2B3243))
+                                    .clickable { c.setPriority(p) }.padding(horizontal = 5.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
                 }
             }
             if (s.kind != StructureKind.KEEP) {
@@ -623,7 +662,7 @@ private fun SelectionPanel(c: GameController, s: SelectedInfo) {
 
 @Composable
 private fun SpecializationDialog(c: GameController, s: SelectedInfo) {
-    val cost = Content.specializationCost
+    val cost = s.specCost
     val hud = c.hud
     val affordable = hud.gold >= cost.gold && hud.wood >= cost.wood && hud.stone >= cost.stone
     GameDialog("Specialize ${s.name}", onClose = { hud.overlay = Overlay.NONE }) {

@@ -6,7 +6,7 @@ const ROOM_START_TIMEOUT_MS = 45_000;
 const ROOM_TICKET_TTL_MS = 8 * 60 * 60 * 1000;
 const MAX_ROOM_TICKETS = 96;
 const HEARTBEAT_MS = 15_000;
-const MODES = new Set(['VERSUS', 'COOP']);
+const MODES = new Set(['VERSUS', 'COOP', 'RACE']);
 
 export const KEY_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 

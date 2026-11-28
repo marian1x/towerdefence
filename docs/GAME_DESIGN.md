@@ -41,6 +41,13 @@ Status: **approved 2026-11-27**. Phase 0–1 done; Phase 2 (world + troops) and 
 - **Engagement:** daily quests, achievements, boss events, era-race alerts, tutorial, juice (hit flashes, coin bursts,
   explosions, screen shake).
 
+## Campaign mode (added 2026-11-28)
+18 hand-designed battles in 3 chapters (The Greenvale, Frostpeak Pass, The Ashen Marches) along the road from your
+capital to the Marauder stronghold on an illustrated 3D realm map. Each battle has a fixed number of waves, gold only,
+and introduces one new tower, raider or ability. Stars depend on leaks. Glory from stars, achievements and quests buys
+War Council perks. Heroic, Iron and Endless modes unlock per level, and there is a Daily Challenge plus friends
+leaderboards and Race mode. Details and status: `docs/ROADMAP.md`.
+
 ## Look & feel
 Stylized low-poly 3D "living diorama": tilted camera, soft shadows, ambient occlusion, bloom, vignette. All models are
 generated in code (consistent style, no asset licensing issues); CC0 packs (Kenney, Quaternius) or custom models can be
@@ -66,3 +73,5 @@ lives in data (`Content.kt`); the simulation never depends on Android.
 | 4 Ages + polish | Industrial + Modern, air units, victory conditions, quests, tutorial, audio, balancing | |
 | 5 Friends | Private builds to share with friends (APK / internal testing) | |
 | 6 Online | Accounts, cloud saves, shared online world | |
+| Campaign | Levels, stars, juice/audio, new raiders/towers/abilities, meta progression, Daily, leaderboards, Race (see ROADMAP.md) | ✅ |
+| Evolution | Travian-like city mode through the eras (medieval → modern), see ROADMAP.md | next |

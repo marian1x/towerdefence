@@ -11,6 +11,22 @@ import kotlinx.serialization.Serializable
 data class Cost(val gold: Int = 0, val wood: Int = 0, val stone: Int = 0) {
     operator fun plus(o: Cost) = Cost(gold + o.gold, wood + o.wood, stone + o.stone)
     operator fun times(f: Float) = Cost((gold * f).toInt(), (wood * f).toInt(), (stone * f).toInt())
+    /** Campaign levels only use gold: every resource is worth one gold. */
+    fun toGold(mult: Float = 1f) = Cost(gold = ((gold + wood + stone) * mult).toInt())
+    val total get() = gold + wood + stone
+}
+
+/** Which raider a tower shoots first. */
+@Serializable
+enum class TargetPriority(val label: String) {
+    FIRST("First"), STRONG("Strongest"), FAST("Fastest"), CLOSE("Closest"),
+}
+
+/** Commander abilities with a cooldown, cast on the battlefield. */
+enum class Ability(val label: String, val cooldown: Float, val radius: Float, val description: String) {
+    VOLLEY("Volley", 20f, 1.8f, "A rain of arrows hits every raider in the area."),
+    REINFORCE("Militia", 38f, 0f, "Three militiamen join the fight for 20 seconds."),
+    TAR("Tar Pit", 26f, 1.6f, "Sticky tar slows raiders in the area for 6 seconds."),
 }
 
 enum class DamageType { PIERCE, ANTI_ARMOR, EXPLOSIVE }
@@ -46,7 +62,14 @@ data class TowerDef(
     val upgradeCosts: List<Cost> = emptyList(),
     val isWall: Boolean = false,
     val chillSeconds: Float = 0f,
-)
+    /** False for lobbed artillery that can't hit flying raiders. */
+    val hitsAir: Boolean = true,
+    /** Support towers: damage bonus for towers in range, per level (0 = not a support tower). */
+    val auraDamage: Float = 0f,
+    val auraRate: Float = 0f,
+) {
+    val isSupport get() = auraDamage > 0f
+}
 
 data class EnemyDef(
     val id: String,
@@ -60,6 +83,19 @@ data class EnemyDef(
     val scale: Float,
     /** Melee damage per hit against troops. */
     val damage: Float = 6f,
+    val description: String = "",
+    /** Flies straight at the Keep over walls; troops can't block it, artillery can't hit it. */
+    val flying: Boolean = false,
+    /** Heals other raiders in [healRadius] by this much HP per second. */
+    val healPerSec: Float = 0f,
+    val healRadius: Float = 0f,
+    /** When destroyed, [splitCount] of [splitInto] jump out. */
+    val splitInto: String? = null,
+    val splitCount: Int = 0,
+    /** Fraction of splash (area) damage that is blocked. */
+    val splashResist: Float = 0f,
+    /** Bosses enrage at half HP, call for help and smash walls. */
+    val boss: Boolean = false,
 )
 
 /** Trainable troops (recruited at the Barracks). */
@@ -123,7 +159,7 @@ object Content {
             description = "Slow boulders that crush whole groups.",
             cost = Cost(gold = 120, wood = 30, stone = 40),
             damage = 22f, range = 5.2f, fireRate = 0.33f, damageType = DamageType.EXPLOSIVE,
-            splash = 1.35f, projectileSpeed = 6.5f, homing = false,
+            splash = 1.35f, projectileSpeed = 6.5f, homing = false, hitsAir = false,
             upgradeCosts = listOf(Cost(120, 30, 50), Cost(200, 40, 90), Cost(275, 60, 130), Cost(365, 90, 180)),
         ),
         TowerDef(
@@ -143,6 +179,14 @@ object Content {
             upgradeCosts = listOf(Cost(100, 35, 35), Cost(165, 50, 60), Cost(235, 65, 95), Cost(330, 90, 135)),
         ),
         TowerDef(
+            id = "banner", name = "War Banner",
+            description = "Inspires nearby towers: more damage and faster shots.",
+            cost = Cost(gold = 70, wood = 40, stone = 10),
+            range = 1.75f, damageType = DamageType.PIERCE,
+            upgradeCosts = listOf(Cost(80, 40, 20), Cost(140, 60, 40)),
+            auraDamage = 0.12f, auraRate = 0.06f,
+        ),
+        TowerDef(
             id = "repeater", name = "Repeater",
             description = "A rapid volley of steel bolts against armored enemies.",
             cost = Cost(gold = 115, wood = 55, stone = 15),
@@ -158,11 +202,24 @@ object Content {
     )
 
     val enemies: List<EnemyDef> = listOf(
-        EnemyDef("raider", "Raider", hp = 36f, speed = 1.45f, armor = Armor.LIGHT, bounty = 3, keepDamage = 1, scale = 1f, damage = 4f),
-        EnemyDef("outrider", "Outrider", hp = 50f, speed = 2.5f, armor = Armor.LIGHT, bounty = 5, keepDamage = 2, scale = 1.1f, damage = 5f),
-        EnemyDef("brute", "Axe Brute", hp = 130f, speed = 0.95f, armor = Armor.HEAVY, bounty = 7, keepDamage = 3, scale = 1.35f, damage = 14f),
-        EnemyDef("warlord", "Marauder Warlord", hp = 800f, speed = 0.75f, armor = Armor.HEAVY, bounty = 60, keepDamage = 10, scale = 1.9f, damage = 30f),
-        EnemyDef("rival", "Rival Soldier", hp = 120f, speed = 1.2f, armor = Armor.HEAVY, bounty = 10, keepDamage = 3, scale = 1.1f, damage = 11f),
+        EnemyDef("raider", "Raider", hp = 36f, speed = 1.45f, armor = Armor.LIGHT, bounty = 3, keepDamage = 1, scale = 1f, damage = 4f,
+            description = "Lightly armored. Arrows cut them down."),
+        EnemyDef("outrider", "Outrider", hp = 50f, speed = 2.5f, armor = Armor.LIGHT, bounty = 5, keepDamage = 2, scale = 1.1f, damage = 5f,
+            description = "Fast runner. Slow it with Frost or tar."),
+        EnemyDef("brute", "Axe Brute", hp = 130f, speed = 0.95f, armor = Armor.HEAVY, bounty = 7, keepDamage = 3, scale = 1.35f, damage = 14f,
+            description = "Heavy armor. Use Ballistas and Repeaters."),
+        EnemyDef("warlord", "Marauder Warlord", hp = 800f, speed = 0.75f, armor = Armor.HEAVY, bounty = 60, keepDamage = 10, scale = 1.9f, damage = 30f,
+            description = "Boss. Enrages at half health, calls raiders and smashes walls.", boss = true),
+        EnemyDef("rival", "Rival Soldier", hp = 120f, speed = 1.2f, armor = Armor.HEAVY, bounty = 10, keepDamage = 3, scale = 1.1f, damage = 11f,
+            description = "A trained soldier of another lord."),
+        EnemyDef("shieldbearer", "Shieldbearer", hp = 150f, speed = 1.0f, armor = Armor.HEAVY, bounty = 8, keepDamage = 2, scale = 1.15f, damage = 9f,
+            description = "Its tower shield blocks most splash damage. Use bolts.", splashResist = 0.6f),
+        EnemyDef("shaman", "War Shaman", hp = 70f, speed = 1.25f, armor = Armor.LIGHT, bounty = 9, keepDamage = 1, scale = 1.0f, damage = 4f,
+            description = "Heals nearby raiders. Kill it first!", healPerSec = 7f, healRadius = 1.8f),
+        EnemyDef("harpy", "Sky Raider", hp = 55f, speed = 1.9f, armor = Armor.LIGHT, bounty = 6, keepDamage = 2, scale = 0.95f, damage = 5f,
+            description = "Glides over walls straight at the Keep. Catapults can't hit it.", flying = true),
+        EnemyDef("ram", "Battering Ram", hp = 420f, speed = 0.6f, armor = Armor.HEAVY, bounty = 20, keepDamage = 6, scale = 1.25f, damage = 20f,
+            description = "Slow and tough. When smashed, its crew of 3 raiders jumps out.", splitInto = "raider", splitCount = 3),
     )
 
     val units: List<UnitDef> = listOf(
@@ -183,10 +240,25 @@ object Content {
         ),
     )
 
+    /** Summoned by the Militia ability (not recruitable). */
+    val militia = UnitDef(
+        "militia", "Militia", "Peasants with spears, here for a short while.",
+        hp = 90f, damage = 8f, range = 0.65f, attackRate = 1.1f, speed = 1.9f,
+        cost = Cost(), damageType = DamageType.PIERCE, power = 6f,
+    )
+
     const val ARMY_BASE_CAP = 4
     const val ARMY_CAP_PER_BARRACKS_LEVEL = 4
     const val TROOP_AGGRO_RANGE = 3.6f
-    private val unitMap = units.associateBy { it.id }
+    const val MILITIA_SECONDS = 20f
+    const val MILITIA_COUNT = 3
+    const val TAR_SECONDS = 6f
+    const val TAR_SPEED_MULTIPLIER = 0.45f
+    /** Fire on a chilled raider shatters the ice: bonus damage. */
+    const val SHATTER_MULTIPLIER = 1.6f
+    const val BOSS_SUMMON_INTERVAL = 9f
+    const val BOSS_SMASH_INTERVAL = 5f
+    private val unitMap = (units + militia).associateBy { it.id }
     fun unit(id: String) = unitMap.getValue(id)
     fun isUnit(id: String) = id in unitMap
 

@@ -86,6 +86,32 @@ test('delivers the final frame before closing and allows the host to reopen the 
     assert.equal(await resumedHost.read(), 'PAIRED');
 });
 
+test('friends share leaderboards; strangers and bad scores are refused', async t => {
+    const client = await startRelay(t);
+    const stranger = await client();
+    stranger.send(`AOS1 SCORES ${hostKey}`);
+    assert.equal(await stranger.read(), 'ERROR lobby-key');
+
+    const submit = async (name, score) => {
+        const c = await client();
+        c.send(`AOS1 SCORES ${lobbyKey}`);
+        assert.equal(await c.read(), 'READY');
+        c.send(JSON.stringify({ t: 'submit', board: 'daily-20000', name, score, stars: 2, wave: 9 }));
+        return JSON.parse(await c.read());
+    };
+    assert.deepEqual(await submit('Alice', 900), { t: 'ok', best: 900, rank: 1 });
+    assert.deepEqual(await submit('Bob', 1200), { t: 'ok', best: 1200, rank: 1 });
+    assert.deepEqual(await submit('Alice', 500), { t: 'ok', best: 900, rank: 2 });
+    assert.equal((await submit('Eve', -5)).t, 'error');
+
+    const reader = await client();
+    reader.send(`AOS1 SCORES ${lobbyKey}`);
+    assert.equal(await reader.read(), 'READY');
+    reader.send(JSON.stringify({ t: 'top', board: 'daily-20000' }));
+    const top = JSON.parse(await reader.read());
+    assert.deepEqual(top.entries.map(e => [e.name, e.score]), [['Bob', 1200], ['Alice', 900]]);
+});
+
 async function readMessage(client, type) {
     for (;;) {
         const line = await client.read();

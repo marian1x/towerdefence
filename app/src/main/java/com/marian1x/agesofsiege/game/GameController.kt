@@ -9,7 +9,18 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.marian1x.agesofsiege.core.Ability
 import com.marian1x.agesofsiege.core.BaseGame
+import com.marian1x.agesofsiege.core.BattleResult
+import com.marian1x.agesofsiege.core.BattleSetup
+import com.marian1x.agesofsiege.core.DailyChallenge
+import com.marian1x.agesofsiege.core.LevelDef
+import com.marian1x.agesofsiege.core.LevelMode
+import com.marian1x.agesofsiege.core.LevelTheme
+import com.marian1x.agesofsiege.core.Levels
+import com.marian1x.agesofsiege.core.Outcome
+import com.marian1x.agesofsiege.core.PlayerProfile
+import com.marian1x.agesofsiege.core.TargetPriority
 import com.marian1x.agesofsiege.core.Campaign
 import com.marian1x.agesofsiege.core.CampaignSave
 import com.marian1x.agesofsiege.core.CampaignSettings
@@ -24,6 +35,7 @@ import com.marian1x.agesofsiege.core.SaveData
 import com.marian1x.agesofsiege.core.Structure
 import com.marian1x.agesofsiege.core.StructureKind
 import com.marian1x.agesofsiege.core.TowerSpecialization
+import com.marian1x.agesofsiege.engine.BattleArt
 import com.marian1x.agesofsiege.engine.Mesh
 import com.marian1x.agesofsiege.engine.MeshBuilder
 import com.marian1x.agesofsiege.engine.Model
@@ -32,6 +44,7 @@ import com.marian1x.agesofsiege.engine.Models
 import com.marian1x.agesofsiege.engine.Palette
 import com.marian1x.agesofsiege.engine.Renderer3D
 import com.marian1x.agesofsiege.engine.TowerArt
+import com.marian1x.agesofsiege.net.Leaderboards
 import java.io.File
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -45,7 +58,8 @@ import kotlin.random.Random
 sealed class InputMode {
     object Normal : InputMode()
     data class Build(val defId: String) : InputMode()
-    object Volley : InputMode()
+    /** Waiting for a tap on the battlefield to cast an ability. */
+    data class Cast(val ability: Ability) : InputMode()
 }
 
 data class SelectedInfo(
@@ -62,12 +76,23 @@ data class SelectedInfo(
     val refund: Cost,
     val stats: String,
     val specialization: TowerSpecialization?,
+    val priority: TargetPriority = TargetPriority.FIRST,
+    val support: Boolean = false,
+    val specCost: Cost = Content.specializationCost,
 )
 
 data class Toast(val id: Long, val text: String, val color: Long)
 
-enum class Screen { MENU, GAME, WORLD }
-enum class Overlay { NONE, PAUSE, SETTINGS, NEW_GAME, ARMY, CONFIRM_RESTART, MULTIPLAYER, SPECIALIZATION }
+enum class Screen { MENU, GAME, WORLD, CAMPAIGN }
+enum class Overlay {
+    NONE, PAUSE, SETTINGS, NEW_GAME, ARMY, CONFIRM_RESTART, MULTIPLAYER, SPECIALIZATION,
+    BRIEFING, RESULTS, PERKS, QUESTS, DAILY, LEADERBOARD,
+}
+
+/** A coin flying from a fallen raider to the gold counter (screen pixels). */
+class CoinFly(val x: Float, val y: Float) {
+    var t = 0f
+}
 
 /** Player preferences (device-local, not part of the save). */
 class Prefs(context: Context) {
@@ -75,12 +100,16 @@ class Prefs(context: Context) {
     var highQuality by mutableStateOf(sp.getBoolean("hq", true))
     var damageNumbers by mutableStateOf(sp.getBoolean("dmg", true))
     var cameraShake by mutableStateOf(sp.getBoolean("shake", true))
+    var sfxVolume by mutableFloatStateOf(sp.getFloat("sfx", 0.8f))
+    var musicVolume by mutableFloatStateOf(sp.getFloat("music", 0.45f))
+    var haptics by mutableStateOf(sp.getBoolean("haptics", true))
     var relayEndpoint: String
         get() = sp.getString("relayEndpoint", "").orEmpty()
         set(value) { sp.edit().putString("relayEndpoint", value).apply() }
 
     fun save() {
-        sp.edit().putBoolean("hq", highQuality).putBoolean("dmg", damageNumbers).putBoolean("shake", cameraShake).apply()
+        sp.edit().putBoolean("hq", highQuality).putBoolean("dmg", damageNumbers).putBoolean("shake", cameraShake)
+            .putFloat("sfx", sfxVolume).putFloat("music", musicVolume).putBoolean("haptics", haptics).apply()
     }
 }
 
@@ -114,6 +143,30 @@ class HudState {
     val reports = mutableStateListOf<Pair<String, Boolean>>()
     /** Realm cell picked in the 3D realm view. */
     var realmSel by mutableStateOf<Pair<Int, Int>?>(null)
+
+    // Campaign battles.
+    var inBattle by mutableStateOf(false)
+    var battleMode by mutableStateOf(LevelMode.NORMAL)
+    var battleName by mutableStateOf("")
+    var totalWaves by mutableIntStateOf(0)
+    var leaks by mutableIntStateOf(0)
+    var twoStarLeaks by mutableIntStateOf(0)
+    var keepMax by mutableIntStateOf(Content.KEEP_MAX_HP)
+    var towers by mutableStateOf<List<String>>(emptyList())
+    var abilities by mutableStateOf<List<Ability>>(listOf(Ability.VOLLEY))
+    var abilityReady by mutableStateOf<Map<Ability, Float>>(emptyMap())
+    var goldOnly by mutableStateOf(false)
+    var goldPulse by mutableIntStateOf(0)
+    var intro by mutableStateOf(false)
+    /** Level picked on the campaign map (briefing dialog). */
+    var briefing by mutableStateOf<LevelDef?>(null)
+    var summary by mutableStateOf<BattleSummary?>(null)
+    /** Bumped whenever the profile changes so profile screens recompose. */
+    var profileVersion by mutableIntStateOf(0)
+    var leaderboardId by mutableStateOf<String?>(null)
+    var leaderboardTitle by mutableStateOf("")
+    var race by mutableStateOf<RaceInfo?>(null)
+    var raceVersion by mutableIntStateOf(0)
 }
 
 /** Where a camera looks from: orbit target, distance, pitch and yaw. One per view (base / realm). */
@@ -128,10 +181,20 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     val floatingTexts = ArrayList<FloatingText>()
 
     val prefs = Prefs(context)
+    val audio = Audio(context, prefs).also { UiSound.audio = it }
     var campaign: Campaign = loadOrNew()
         private set
-    val game: BaseGame get() = campaign.base
+    /** Campaign progress (stars, Glory, quests...). */
+    val profile: PlayerProfile = loadProfile()
+    /** The level battle being fought, or null for the realm base. */
+    var battle: LevelBattle? = null
+        private set
+    val game: BaseGame get() = battle?.game ?: campaign.base
     val hasSave: Boolean get() = saveFile.exists()
+    /** Coins flying to the gold counter (drawn by the HUD overlay). */
+    val coinFlies = ArrayList<CoinFly>()
+    /** A fixed realm used as the illustrated campaign map. */
+    val mapCampaign: Campaign by lazy { Campaign(CAMPAIGN_MAP_SEED, CampaignSettings()).also { prepareCampaignMap(it) } }
 
     private val meshCache = HashMap<String, Mesh>()
     private val fx = Fx(r3d, mesh("cube") { Models.cube(this) })
@@ -162,7 +225,12 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         var animTime = Random.nextFloat() * 3f
         /** 1 -> 0 after being selected: a short squash-and-stretch so the player sees what was picked. */
         var pop = 0f
+        /** 1 -> 0 right after being built: the tower rises out of the ground. */
+        var rise = 0f
     }
+
+    /** Structures built this frame (their visual rises once created). */
+    private val risingIds = HashSet<Int>()
 
     private class EnemyVisual(val model: Model, val def: EnemyDef) {
         var lastHp = Float.MAX_VALUE
@@ -186,6 +254,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     private val structureVisuals = HashMap<Int, StructureVisual>()
     private val enemyVisuals = HashMap<Int, EnemyVisual>()
+    /** Wings, rams, shields and staffs carried by the new raider types. */
+    private val enemyExtras = HashMap<Int, Piece>()
     private val troopVisuals = HashMap<Int, TroopVisual>()
     private val troopDiedIds = HashSet<Int>()
     private val corpses = ArrayList<Corpse>()
@@ -216,9 +286,17 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     private var toastId = 0L
     private var shake = 0f
 
+    // Battlefield extras (roads, ponds, gate flags) rebuilt per level; tar pits; weather.
+    private val levelPieces = ArrayList<Pair<Int, Mesh?>>()
+    private val tarEntities = ArrayList<Int>()
+    private val tarMi = r3d.litInstance(0x2A1C12, r3d.ghostMaterial, 0.72f)
+    private val tarMesh by lazy { mesh("disc") { Models.discMesh(this) } }
+    private var weatherTimer = 0f
+    private var keepSmokeTimer = 0f
+    private var introFrom = floatArrayOf(0f, 0f)
+
     init {
         models.warmUp("raider" to 16, "arrow" to 16, "archer_crew" to 8)
-        meshPiece("entrance-banners") { TowerArt.gates(this, game.gates) }
         buildWorld()
         r3d.camTargetX = 14f
         r3d.camTargetZ = 8.6f
@@ -228,19 +306,361 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     /** The simulation only runs while playing (not on menus or open dialogs). */
     private val simulating: Boolean
-        get() = if (inMatch) {
-            mp?.running == true
-        } else {
-            hud.screen != Screen.MENU && !hud.paused && (hud.overlay == Overlay.NONE || hud.overlay == Overlay.ARMY)
+        get() {
+            val b = battle
+            if (b != null && (b.intro > 0f || b.finished || hud.screen != Screen.GAME)) return false
+            if (inMatch) return mp?.running == true
+            return (hud.screen == Screen.GAME || hud.screen == Screen.WORLD) && !hud.paused &&
+                (hud.overlay == Overlay.NONE || hud.overlay == Overlay.ARMY)
         }
 
-    // ------------------------------------------------------------ multiplayer
+    // ------------------------------------------------------------ campaign battles
 
-    /** The current two-player session (lobby or match), or null. */
+    private val profileFile get() = File(context.filesDir, "profile.json")
+
+    private fun loadProfile(): PlayerProfile = try {
+        val f = File(context.filesDir, "profile.json")
+        if (f.exists()) PlayerProfile.fromJson(f.readText()) else PlayerProfile()
+    } catch (t: Throwable) {
+        Log.w("AgesOfSiege", "Could not load profile", t)
+        PlayerProfile()
+    }
+
+    fun saveProfile() {
+        try {
+            profileFile.writeText(profile.toJson())
+        } catch (t: Throwable) {
+            Log.w("AgesOfSiege", "Profile save failed", t)
+        }
+        hud.profileVersion++
+    }
+
+    /** Today's number for the Daily Challenge and quests (UTC days). */
+    fun today(): Long = System.currentTimeMillis() / 86_400_000L
+
+    /** The campaign map: your capital in the west, the Marauder stronghold in the east. */
+    private fun prepareCampaignMap(c: Campaign) {
+        c.world.explored.fill(false)
+        c.rival.contact = true
+    }
+
+    /** Unlocked levels lift the clouds around them. */
+    private fun revealCampaignMap() {
+        val w = mapCampaign.world
+        w.reveal(w.home.first, w.home.second, 3)
+        for ((i, l) in Levels.all.withIndex()) {
+            if (!profile.isUnlocked(l)) continue
+            val (x, y) = levelCell(i)
+            w.reveal(x, y, if (profile.stars(l.id) > 0) 3 else 2)
+        }
+    }
+
+    private val levelCells: List<Pair<Int, Int>> by lazy {
+        val w = mapCampaign.world
+        val ww = com.marian1x.agesofsiege.core.World.W
+        val wh = com.marian1x.agesofsiege.core.World.H
+        val path = w.path(w.home.first, w.home.second, w.rivalHome.first, w.rivalHome.second).orEmpty()
+        val n = Levels.all.size
+        if (path.size < 3) return@lazy List(n) { (2 + it * 2).coerceAtMost(ww - 2) to wh / 2 }
+        List(n) { i ->
+            val k = ((i + 1).toFloat() / (n + 1) * (path.size - 1)).toInt().coerceIn(1, path.size - 1)
+            val c = path[k]
+            // Zig-zag a little off the road so flags don't overlap.
+            val x = c % ww
+            val y = c / ww + (if (i % 2 == 0) -1 else 1)
+            x to y.coerceIn(1, wh - 2)
+        }
+    }
+
+    /** Realm cell of the campaign map flag for level number [index]. */
+    fun levelCell(index: Int): Pair<Int, Int> = levelCells[index]
+
+    /** World position above a level's flag (for screen labels). */
+    fun levelAnchor(index: Int): FloatArray {
+        val (x, y) = levelCell(index)
+        return realm.labelAnchor(x, y, 1.2f)
+    }
+
+    fun openCampaign() {
+        hud.overlay = Overlay.NONE
+        hud.briefing = null
+        if (battle != null) endBattle()
+        profile.refreshQuests(today())
+        revealCampaignMap()
+        val i = Levels.all.indexOf(profile.currentLevel())
+        val (x, y) = levelCell(i)
+        realmRig.x = RealmView.cellCenter(x)
+        realmRig.z = RealmView.cellCenter(y)
+        realmRig.dist = 30f
+        realmRig.yaw = 0f
+        hud.screen = Screen.CAMPAIGN
+        hud.profileVersion++
+    }
+
+    fun openBriefing(level: LevelDef) {
+        audio.play("page", 0.7f)
+        hud.briefing = level
+        hud.overlay = Overlay.BRIEFING
+    }
+
+    fun perksFor(mode: LevelMode): Map<String, Int> =
+        if (mode == LevelMode.DAILY || mode == LevelMode.RACE) emptyMap() else HashMap(profile.perks)
+
+    fun startLevel(level: LevelDef, mode: LevelMode) {
+        if (!profile.modeUnlocked(level, mode)) {
+            toast("Locked", 0xFFFFB0A0)
+            return
+        }
+        startBattle(BattleSetup(level, mode, perks = perksFor(mode)))
+    }
+
+    fun startDaily() = startBattle(DailyChallenge.forDay(today()))
+
+    private fun startBattle(setup: BattleSetup, seed: Long = System.nanoTime() and 0xffffff, race: RaceInfo? = null) {
+        if (battle == null && campaign.mp == null) save() // keep the realm safe
+        clearVisuals()
+        battle = LevelBattle(setup, BaseGame(seed, setup), race)
+        hud.race = race
+        buildWorld()
+        hud.selected = null
+        hud.mode = InputMode.Normal
+        hud.paused = false
+        hud.speed = 1
+        hud.toasts.clear()
+        hud.summary = null
+        hud.overlay = Overlay.NONE
+        hud.screen = Screen.GAME
+        // Opening flight: from the first gate to the Keep.
+        val (gx, gy) = game.gates.first()
+        introFrom = floatArrayOf(gx + 0.5f, gy + 0.5f)
+        r3d.camTargetX = introFrom[0]
+        r3d.camTargetZ = introFrom[1]
+        r3d.camDistance = 15f
+        zoomTo = null
+        gameYaw = 0f
+        applyZoomPitch()
+        audio.play("horn", 0.5f)
+        toast("${setup.level.name} — ${setup.mode.label}", 0xFFFFD34D)
+        refreshHud()
+    }
+
+    fun skipIntro() {
+        battle?.let { if (it.intro > 0f) it.intro = 0.01f }
+    }
+
+    fun retryBattle() {
+        val b = battle ?: return
+        if (b.race != null) return
+        startBattle(b.setup.copy(perks = perksFor(b.mode)))
+    }
+
+    fun nextLevel() {
+        val b = battle ?: return
+        val next = Levels.next(b.level.id)
+        if (next == null || !profile.isUnlocked(next)) return openCampaign()
+        startLevel(next, LevelMode.NORMAL)
+    }
+
+    /** Leaves the battle (to the campaign map, or the menu after a Daily/Race). */
+    fun leaveBattle() {
+        val b = battle ?: return
+        endBattle()
+        when {
+            b.race != null -> {
+                mp?.close()
+                mp = null
+                hud.screen = Screen.MENU
+            }
+            b.mode == LevelMode.DAILY -> {
+                hud.screen = Screen.MENU
+                hud.overlay = Overlay.DAILY
+            }
+            else -> openCampaign()
+        }
+    }
+
+    private fun endBattle() {
+        clearVisuals()
+        battle = null
+        hud.race = null
+        hud.summary = null
+        buildWorld()
+        r3d.camTargetX = 14f
+        r3d.camTargetZ = 8.6f
+        refreshHud()
+    }
+
+    /** The battle is over: record it, update quests and boards, and show the results. */
+    private fun finishBattle(won: Boolean) {
+        val b = battle ?: return
+        if (b.finished) return
+        b.finished = true
+        val g = b.game
+        val score = g.score()
+        val record = if (b.mode == LevelMode.RACE) null else profile.recordBattle(
+            BattleResult(
+                b.level.id, b.mode, won, g.stars, score, g.wave, g.stats.kills, g.stats.shatters, g.stats.bossKills,
+                g.stats.abilitiesUsed, g.stats.towersBuilt, today(),
+            ),
+            HashMap(g.stats.killsByTower),
+        )
+        saveProfile()
+        val board = when (b.mode) {
+            LevelMode.DAILY -> DailyChallenge.boardId(today())
+            LevelMode.NORMAL, LevelMode.HEROIC, LevelMode.IRON -> if (won) "level-${b.level.id}-${b.mode.name.lowercase()}" else null
+            LevelMode.ENDLESS -> "endless-${b.level.id}"
+            LevelMode.RACE -> null
+        }
+        if (board != null) Leaderboards.submit(context, board, playerName(), score, g.stars, g.wave)
+        hud.summary = BattleSummary(
+            b.level.id, b.level.name, b.mode, won, g.stars, g.leaks, b.level.twoStarLeaks, score, g.wave,
+            if (g.totalWaves == Int.MAX_VALUE) 0 else g.totalWaves, g.stats.kills, record,
+            hasNext = won && b.mode == LevelMode.NORMAL && Levels.next(b.level.id)?.let { profile.isUnlocked(it) } == true,
+            board = board,
+            race = b.race?.let { raceResult(it) },
+        )
+        if (b.race != null) mp?.raceStatus(g, force = true)
+        if (won) {
+            audio.play("victory", 0.9f, minGapMs = 0)
+            audio.hapticPattern(longArrayOf(0, 40, 80, 40, 80, 90), intArrayOf(0, 120, 0, 160, 0, 220))
+        } else {
+            audio.play("defeat", 0.9f, minGapMs = 0)
+            audio.haptic(220, 200)
+        }
+        record?.achievements?.forEach { toast("🏆 ${it.name} (+${it.glory} Glory)", 0xFFFFD34D) }
+        if (record?.achievements?.isNotEmpty() == true) audio.play("achievement", 0.8f, minGapMs = 0)
+        hud.mode = InputMode.Normal
+        hud.overlay = Overlay.RESULTS
+    }
+
+    fun playerName(): String = profile.name.ifBlank { hud.settings.lordName.takeIf { it != "Lord of the Keep" } ?: "Commander" }
+
+    fun setPlayerName(name: String) {
+        profile.name = name.trim().take(18)
+        saveProfile()
+    }
+
+    fun buyPerk(id: String) {
+        val err = profile.buyPerk(id)
+        if (err != null) {
+            toast(err, 0xFFFFB0A0)
+            audio.play("error")
+        } else {
+            audio.play("upgrade")
+            saveProfile()
+        }
+    }
+
+    fun resetPerks() {
+        profile.resetPerks()
+        audio.play("sell")
+        saveProfile()
+    }
+
+    fun claimQuest(q: com.marian1x.agesofsiege.core.QuestState) {
+        val g = profile.claimQuest(q)
+        if (g > 0) {
+            audio.play("coins", 0.9f)
+            audio.play("star", 0.7f)
+            toast("+$g Glory", 0xFFFFD34D)
+            saveProfile()
+        }
+    }
+
+    fun openLeaderboard(board: String, title: String) {
+        hud.leaderboardId = board
+        hud.leaderboardTitle = title
+        hud.overlay = Overlay.LEADERBOARD
+    }
+
+    // ------------------------------------------------------------ race (same level, two phones)
+
+    private fun raceResult(r: RaceInfo): RaceResult {
+        val g = game
+        val me = g.outcome
+        val them = r.outcome
+        val youWon = when {
+            me == Outcome.WON && them != Outcome.WON -> true
+            me != Outcome.WON && them == Outcome.WON -> false
+            g.wave != r.wave -> g.wave > r.wave
+            else -> g.score() >= r.score
+        }
+        val text = when {
+            them == null && me == Outcome.LOST -> "Your Keep fell first. ${r.opponent} is still fighting (wave ${r.wave})."
+            them == null -> "${r.opponent} is still fighting (wave ${r.wave})…"
+            youWon -> "You beat ${r.opponent}! Score ${g.score()} vs ${r.score}"
+            else -> "${r.opponent} wins this race. Score ${g.score()} vs ${r.score}"
+        }
+        return RaceResult(youWon && !(them == null && me == Outcome.LOST), r.opponent, text)
+    }
+
+    /** Both phones start the same level with the same seed. */
+    internal fun beginRace(session: MpSession, setup: com.marian1x.agesofsiege.core.MatchSetup, slot: Int) {
+        if (battle?.race != null && raceMatchId == setup.matchId) {
+            // Reconnected to the same race: keep this battle.
+            mp = session
+            hud.overlay = if (battle?.finished == true) Overlay.RESULTS else Overlay.NONE
+            toast("Reconnected!", 0xFF7CFC9A)
+            return
+        }
+        raceMatchId = setup.matchId
+        mp = session
+        val level = Levels.get(setup.level ?: "") ?: Levels.all.first()
+        val other = setup.players.first { it.slot != slot }.name
+        startBattle(BattleSetup(level, LevelMode.RACE), seed = setup.seed, race = RaceInfo(other))
+        toast("Race on ${level.name}! Kills earn raider squads to send to $other.", 0xFF7CFC9A)
+    }
+
+    /** Race: the opponent's latest numbers. */
+    internal fun onRaceStatus(msg: com.marian1x.agesofsiege.core.NetMsg.RaceStatus) {
+        val r = battle?.race ?: return
+        r.wave = msg.wave
+        r.keepHp = msg.keepHp
+        r.keepMax = msg.keepMax
+        r.leaks = msg.leaks
+        r.score = msg.score
+        if (msg.done) r.outcome = if (msg.won) Outcome.WON else Outcome.LOST
+        hud.raceVersion++
+        val summary = hud.summary
+        if (summary?.race != null && battle?.finished == true) hud.summary = summary.copy(race = raceResult(r))
+    }
+
+    /** Race: the opponent sent raiders into this battlefield. */
+    internal fun onRaceAttack(msg: com.marian1x.agesofsiege.core.NetMsg.RaceSend) {
+        val b = battle ?: return
+        val r = b.race ?: return
+        if (b.finished) return
+        r.received += msg.units
+        b.game.launchAssault(msg.id, msg.units, msg.hp, r.opponent, msg.enemyId)
+        handleEvents(b.game.drainEvents())
+    }
+
+    /** Race: spend a token to send a raider squad to the opponent. */
+    fun sendRaceSquad() {
+        val b = battle ?: return
+        val r = b.race ?: return
+        if (r.tokens <= 0) {
+            toast("Defeat more raiders to earn a squad", 0xFFFFB0A0)
+            return
+        }
+        val session = mp
+        val err = if (session == null) "Not connected" else session.sendRaceSquad(b.game)
+        if (err != null) {
+            toast(err, 0xFFFFB0A0)
+            return
+        }
+        r.tokens--
+        r.sent++
+        audio.play("horn", 0.45f, rate = 1.3f)
+        toast("Raiders march on ${r.opponent}!", 0xFF7CFC9A)
+        hud.raceVersion++
+    }
     var mp by mutableStateOf<MpSession?>(null)
         private set
 
-    val inMatch: Boolean get() = campaign.mp != null
+    /** A live two-player game: a realm match, or a Race whose opponent is still connected. */
+    val inMatch: Boolean get() = campaign.mp != null || (battle?.race != null && mp != null && mp?.phase != MpSession.Phase.ENDED)
+    private var raceMatchId = 0L
 
     fun hostMatch(
         name: String,
@@ -249,10 +669,11 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         pace: com.marian1x.agesofsiege.core.Pace,
         endpoint: com.marian1x.agesofsiege.net.RelayEndpoint? = null,
         hostKey: String = "",
+        raceLevel: String? = null,
     ) {
         mp?.close()
         if (endpoint != null) prefs.relayEndpoint = endpoint.toString()
-        mp = MpSession.host(this, context, name.ifBlank { "Host" }, mode, difficulty, pace, endpoint, hostKey)
+        mp = MpSession.host(this, context, name.ifBlank { "Host" }, mode, difficulty, pace, endpoint, hostKey, raceLevel = raceLevel)
     }
 
     fun joinMatch(name: String, host: String, port: Int) {
@@ -312,6 +733,10 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     /** Ends the match for this phone and goes back to the single-player game. */
     fun leaveMatch() {
+        if (battle?.race != null) {
+            leaveBattle()
+            return
+        }
         mp?.close()
         mp = null
         clearVisuals()
@@ -357,17 +782,22 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         running = true
         lastNanos = 0L
         Choreographer.getInstance().postFrameCallback(this)
+        audio.resume()
     }
 
     fun stop() {
         running = false
         Choreographer.getInstance().removeFrameCallback(this)
+        audio.pause()
         save()
+        // A battle in progress pauses itself so the player comes back to the pause menu.
+        if (battle?.finished == false && !inMatch && hud.overlay == Overlay.NONE) hud.overlay = Overlay.PAUSE
     }
 
     fun destroy() {
         stop()
         mp?.close()
+        audio.release()
         models.destroy()
         r3d.destroy()
     }
@@ -440,6 +870,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     fun applyPrefs() {
         prefs.save()
         r3d.setQuality(prefs.highQuality)
+        audio.applyVolumes()
     }
 
     // ------------------------------------------------------------ models
@@ -496,9 +927,11 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             "brazier" -> 0.83f
             else -> models.headY(baseName)
         }
-        val detail = if (s.kind == StructureKind.TOWER && (s.level >= 4 || s.specialization != null)) {
-            meshPiece("tower-detail-${s.level}-${s.specialization}") {
+        val trim = if (s.kind == StructureKind.TOWER && battle != null) profile.towerTier(s.defId) else 0
+        val detail = if (s.kind == StructureKind.TOWER && (s.level >= 4 || s.specialization != null || trim > 0)) {
+            meshPiece("tower-detail-${s.level}-${s.specialization}-$trim") {
                 TowerArt.upgradeDetail(this, s.level, s.specialization)
+                if (trim > 0) BattleArt.gildedTrim(this, trim)
             }
         } else null
         r3d.setTransform(base.root, s.cx, 0f, s.cy)
@@ -514,7 +947,19 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     private fun enemyModelName(defId: String) = when (defId) {
         "outrider", "brute", "warlord" -> defId
+        "shieldbearer" -> "rival"
+        "shaman" -> "villager_f"
+        "harpy" -> "outrider"
+        "ram" -> "brute"
         else -> "raider"
+    }
+
+    private fun enemyExtra(defId: String): Piece? = when (defId) {
+        "harpy" -> meshPiece("enemy-wings") { BattleArt.wings(this) }
+        "ram" -> meshPiece("enemy-ram") { BattleArt.ram(this) }
+        "shieldbearer" -> meshPiece("enemy-shield") { BattleArt.shield(this) }
+        "shaman" -> meshPiece("enemy-staff") { BattleArt.staff(this) }
+        else -> null
     }
 
     // ------------------------------------------------------------ static world
@@ -566,6 +1011,30 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             worldModels += m
         }
 
+        // Per-battlefield pieces: gate flags, roads, ponds.
+        for ((e, m) in levelPieces) {
+            r3d.destroyEntity(e)
+            m?.let { r3d.destroyMesh(it) }
+        }
+        levelPieces.clear()
+        fun addPiece(b: MeshBuilder, mi: com.google.android.filament.MaterialInstance, shadows: Boolean, y: Float = 0f) {
+            if (b.vertexCount == 0) return
+            val m = r3d.upload(b)
+            val e = r3d.createRenderable(m, mi, shadows)
+            r3d.setTransform(e, 0f, y, 0f)
+            r3d.scene.addEntity(e)
+            levelPieces += e to m
+        }
+        addPiece(MeshBuilder().apply { TowerArt.gates(this, g.gates, allOpen = g.level != null, width = g.width, height = g.height) }, towerMaterial, true)
+        if (g.level != null) {
+            addPiece(MeshBuilder().apply { BattleArt.shores(this, g.tiles, g.width, g.height) }, r3d.defaultLit, false)
+            addPiece(MeshBuilder().apply { BattleArt.roads(this, g.tiles, g.width, g.height) }, r3d.defaultLit, false)
+            addPiece(MeshBuilder().apply { BattleArt.water(this, g.tiles, g.width, g.height) }, r3d.waterMaterial.createInstance(), false, y = 0.02f)
+        }
+        val theme = g.level?.theme ?: LevelTheme.MEADOW
+        r3d.applyLook(Looks.of(theme))
+        audio.music.setTheme(theme, isMenu = g.level == null)
+
         // Faint build grid (shown in build mode).
         val grid = MeshBuilder().apply {
             for (x in 0..g.width) box(x - 0.012f, 0.004f, 0f, x + 0.012f, 0.01f, g.height.toFloat(), Palette.WHITE)
@@ -601,6 +1070,10 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         corpses.clear()
         projectileVisuals.values.forEach(::release)
         projectileVisuals.clear()
+        for (e in tarEntities) r3d.scene.remove(e)
+        coinFlies.clear()
+        enemyExtras.values.forEach(::release)
+        enemyExtras.clear()
         selectionModel?.let { models.release(it) }
         selectionModel = null
         selectionFor = -1
@@ -617,24 +1090,43 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         lastNanos = frameTimeNanos
 
         mp?.tick(dt)
+        val b = battle
+        var timeScale = (if (inMatch) 1 else hud.speed).toFloat()
+        if (b != null) {
+            if (b.intro > 0f && hud.screen == Screen.GAME) introFlight(b, dt)
+            if (b.hitStop > 0f) {
+                b.hitStop -= dt
+                timeScale = 0f
+            } else if (b.slowMo > 0f) {
+                b.slowMo -= dt
+                timeScale *= 0.3f
+            }
+        }
         if (simulating) {
-            acc += dt * (if (inMatch) 1 else hud.speed)
+            acc += dt * timeScale
             var steps = 0
             while (acc >= BaseGame.DT && steps < 12) {
-                campaign.step()
+                if (b != null) b.game.step() else campaign.step()
                 handleEvents(game.drainEvents())
                 acc -= BaseGame.DT
                 steps++
+                if (battle !== b) break
             }
             if (steps == 12) acc = 0f
         }
         val alpha = (acc / BaseGame.DT).coerceIn(0f, 1f)
-        val simDt = if (!simulating) 0f else dt * (if (inMatch) 1 else hud.speed)
+        val simDt = if (!simulating) 0f else dt * timeScale
+        audio.music.intensity = if (hud.screen == Screen.GAME && game.phase == Phase.ACTIVE && game.enemies.isNotEmpty()) 1f else 0f
         syncView()
+        if (hud.screen == Screen.GAME) {
+            weather(dt)
+            keepDamage(simDt)
+            syncTar()
+        }
         if (hud.screen == Screen.MENU) {
             // Slow cinematic orbit behind the main menu.
             r3d.camYawDeg = (r3d.camYawDeg + dt * 4f) % 360f
-        } else {
+        } else if (b == null || b.intro <= 0f || hud.screen != Screen.GAME) {
             zoomTo?.let { goal ->
                 r3d.camDistance += (goal - r3d.camDistance) * min(1f, dt * 4f)
                 if (kotlin.math.abs(goal - r3d.camDistance) < 0.05f) zoomTo = null
@@ -648,17 +1140,25 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             glide(dt)
         }
 
-        if (r3d.showingRealm) realm.update(campaign, dt, hud.realmSel)
-        villagers.update(game, simDt)
+        if (r3d.showingRealm) {
+            if (hud.screen == Screen.CAMPAIGN) realm.update(mapCampaign, dt, null) else realm.update(campaign, dt, hud.realmSel)
+        }
+        villagers.update(game, if (b != null) 0f else simDt)
         chimneySmoke(simDt)
-        syncStructures(simDt)
+        syncStructures(simDt, dt)
         syncEnemies(alpha, simDt)
         syncTroops(alpha, simDt)
         syncCorpses(simDt)
         syncProjectiles(alpha)
         syncOverlays(dt)
-        fx.update(simDt)
+        val fxDt = when {
+            simulating -> simDt
+            b != null && b.intro > 0f -> dt
+            else -> 0f
+        }
+        fx.update(fxDt)
         updateTexts(simDt)
+        updateCoins(dt)
         applyShake(dt)
         r3d.shake = shakeOffset()
 
@@ -673,6 +1173,99 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     /** World height just above a structure's top (for HUD markers). */
     fun markerHeight(s: Structure): Float = structureTop(s) + 0.18f
+
+    /** Opening shot of a battle: glide from the first gate to the Keep, then the countdown starts. */
+    private fun introFlight(b: LevelBattle, dt: Float) {
+        val total = if (b.race == null) 3.4f else 2f
+        b.intro -= dt
+        val t = (1f - b.intro / total).coerceIn(0f, 1f)
+        val e = t * t * (3f - 2f * t)
+        val k = game.keep
+        r3d.camTargetX = introFrom[0] + (k.cx - 2.5f - introFrom[0]) * e
+        r3d.camTargetZ = introFrom[1] + (k.cy - introFrom[1]) * e
+        r3d.camDistance = 14f + 10f * e
+        r3d.camYawDeg = 18f * (1f - e)
+        applyZoomPitch()
+        if (b.intro <= 0f) {
+            b.intro = 0f
+            gameYaw = 0f
+            audio.play("bong", 0.5f)
+        }
+    }
+
+    /** Snow, ash, embers and fireflies drifting over the battlefield. */
+    private fun weather(dt: Float) {
+        val theme = game.level?.theme ?: return
+        weatherTimer -= dt
+        if (weatherTimer > 0f) return
+        weatherTimer = when (theme) {
+            LevelTheme.FROST -> 0.07f
+            LevelTheme.EMBER -> 0.12f
+            LevelTheme.NIGHT, LevelTheme.MARSH -> 0.3f
+            LevelTheme.AUTUMN -> 0.45f
+            LevelTheme.MEADOW -> 0.9f
+        }
+        val glow = theme == LevelTheme.EMBER || theme == LevelTheme.NIGHT || theme == LevelTheme.MARSH
+        if (fx.freeCount(glow) < 60) return
+        val x = r3d.camTargetX + Random.nextFloat() * 22f - 11f
+        val z = r3d.camTargetZ + Random.nextFloat() * 14f - 7f
+        when (theme) {
+            LevelTheme.FROST -> fx.drift(x, 6f, z, 0xF4F8FF, false, 0.25f, -0.9f, 0.1f, 0.045f, 6f)
+            LevelTheme.EMBER -> fx.drift(x, 0.2f, z, if (Random.nextBoolean()) 0xFF7A2A else 0xFFB347, true, 0.1f, 0.6f, -0.05f, 0.035f, 3.5f, 3f)
+            LevelTheme.NIGHT -> fx.drift(x, 0.4f + Random.nextFloat(), z, 0xE8FF7A, true, Random.nextFloat() * 0.3f - 0.15f, 0.06f, Random.nextFloat() * 0.3f - 0.15f, 0.03f, 3f, 4f)
+            LevelTheme.MARSH -> fx.drift(x, 0.3f + Random.nextFloat() * 0.6f, z, 0xB8FF9A, true, 0.08f, 0.05f, 0.05f, 0.028f, 3f, 2.6f)
+            LevelTheme.AUTUMN -> fx.drift(x, 4f, z, if (Random.nextBoolean()) 0xD9822B else 0xB5452A, false, 0.6f, -0.7f, 0.2f, 0.05f, 6f)
+            LevelTheme.MEADOW -> fx.drift(x, 0.5f + Random.nextFloat(), z, 0xFFFFFF, true, 0.25f, 0.05f, 0.1f, 0.022f, 2.5f, 1.6f)
+        }
+    }
+
+    /** A wounded Keep smokes, a badly wounded one burns. */
+    private fun keepDamage(dt: Float) {
+        if (dt <= 0f) return
+        val g = game
+        val f = g.keepHp / g.keepMaxHp.toFloat()
+        if (f > 0.66f) return
+        keepSmokeTimer -= dt
+        if (keepSmokeTimer > 0f) return
+        keepSmokeTimer = if (f < 0.33f) 0.12f else 0.35f
+        val k = g.keep
+        val x = k.cx + Random.nextFloat() * 1.2f - 0.6f
+        val z = k.cy + Random.nextFloat() * 1.2f - 0.6f
+        fx.burst(x, 1.6f, z, 1, 0x4A4A4E, speed = 0.15f, up = 0.6f, size = 0.16f, life = 2.4f, gravity = -0.2f, grow = true)
+        if (f < 0.33f) fx.burst(x, 1.2f, z, 2, TowerArt.FIRE, glow = true, speed = 0.4f, up = 1.4f, size = 0.07f, life = 0.5f, gravity = -1f, glowIntensity = 3f)
+    }
+
+    /** Dark sticky discs where Tar Pits were cast. */
+    private fun syncTar() {
+        val pits = game.tarPits
+        while (tarEntities.size < pits.size) {
+            tarEntities += r3d.createRenderable(tarMesh, tarMi, shadows = false)
+        }
+        for ((i, e) in tarEntities.withIndex()) {
+            val p = pits.getOrNull(i)
+            if (p == null) {
+                r3d.scene.remove(e)
+                continue
+            }
+            val fade = (p.timer / 0.5f).coerceIn(0f, 1f)
+            r3d.setTransform(e, p.x, 0.035f, p.y, scale = Ability.TAR.radius * (0.6f + 0.4f * fade))
+            r3d.scene.addEntity(e)
+            if (Random.nextFloat() < 0.08f) fx.burst(p.x + Random.nextFloat() - 0.5f, 0.08f, p.y + Random.nextFloat() - 0.5f, 1, 0x3A2A1A, speed = 0.1f, up = 0.6f, size = 0.05f, life = 0.6f)
+        }
+    }
+
+    private fun updateCoins(dt: Float) {
+        if (coinFlies.isEmpty()) return
+        val it = coinFlies.iterator()
+        while (it.hasNext()) {
+            val c = it.next()
+            c.t += dt * 1.6f
+            if (c.t >= 1f) {
+                it.remove()
+                hud.goldPulse++
+            }
+        }
+    }
 
     private fun applyShake(dt: Float) {
         if (shake <= 0f) return
@@ -722,7 +1315,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         }
     }
 
-    private fun syncStructures(dt: Float) {
+    private fun syncStructures(dt: Float, realDt: Float) {
         val g = game
         val it = structureVisuals.entries.iterator()
         while (it.hasNext()) {
@@ -734,19 +1327,31 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             }
         }
         for (s in g.structures.values) {
-            val v = structureVisuals.getOrPut(s.id) { createStructureVisual(s) }
+            val v = structureVisuals.getOrPut(s.id) {
+                createStructureVisual(s).also { if (risingIds.remove(s.id)) it.rise = 1f }
+            }
+            var lift = 1f
+            if (v.rise > 0f) {
+                v.rise = max(0f, v.rise - realDt * 3.2f)
+                val k = 1f - v.rise
+                // Ease-out-back: overshoots a little, then settles.
+                val c = 1.9f
+                lift = (1f + (c + 1f) * (k - 1f) * (k - 1f) * (k - 1f) + c * (k - 1f) * (k - 1f)).coerceAtLeast(0.04f)
+                r3d.setTransform(v.base.root, s.cx, 0f, s.cy, sy = lift)
+                v.detail?.let { r3d.setTransform(it.root, s.cx, 0f, s.cy, sy = lift) }
+            }
             val head = v.head ?: continue
             v.animTime += dt
             if (v.crew) {
                 // Archer on the battlements: shoot animation right after firing, idle otherwise.
-                r3d.setTransform(head.root, s.cx, v.headY, s.cy, yaw = s.aim, scale = 0.5f)
+                r3d.setTransform(head.root, s.cx, v.headY * lift, s.cy, yaw = s.aim, scale = 0.5f)
                 if (s.sinceShot < 0.6f) head.model?.animate("holding-both-shoot", s.sinceShot, loop = false)
                 else head.model?.animate("idle", v.animTime)
             } else {
                 val recoil = if (s.sinceShot < 0.18f) (1f - s.sinceShot / 0.18f) else 0f
                 val kickPitch = if (s.defId == "catapult") -recoil * 0.45f else 0f
                 val back = recoil * 0.06f
-                r3d.setTransform(head.root, s.cx - sin(s.aim) * back, v.headY, s.cy - cos(s.aim) * back, yaw = s.aim, pitch = kickPitch)
+                r3d.setTransform(head.root, s.cx - sin(s.aim) * back, v.headY * lift, s.cy - cos(s.aim) * back, yaw = s.aim, pitch = kickPitch)
             }
         }
     }
@@ -773,11 +1378,39 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             while (dy > Math.PI) dy -= (2 * Math.PI).toFloat()
             while (dy < -Math.PI) dy += (2 * Math.PI).toFloat()
             v.yaw += dy * min(1f, dt * 10f)
-            val scale = enemyVisualScale(e.def) * (1f + v.pop * 0.12f)
-            r3d.setTransform(v.model.root, v.x, 0f, v.z, yaw = v.yaw, scale = scale)
-            val anim = if (e.def.id == "outrider") "sprint" else "walk"
+            val scale = enemyVisualScale(e.def) * (1f + v.pop * 0.12f) * (if (e.enraged) 1.12f else 1f)
             v.animTime += dt * (e.def.speed / 1.3f)
+            val lift = if (e.def.flying) 1.05f + 0.12f * sin(v.animTime * 4f) else 0f
+            r3d.setTransform(v.model.root, v.x, lift, v.z, yaw = v.yaw, scale = scale)
+            val anim = when {
+                e.def.flying -> "idle"
+                e.def.id == "outrider" -> "sprint"
+                e.enraged -> "sprint"
+                else -> "walk"
+            }
             v.model.animate(anim, v.animTime)
+            if (!enemyExtras.containsKey(e.id)) enemyExtra(e.def.id)?.let { enemyExtras[e.id] = it }
+            enemyExtras[e.id]?.let { piece ->
+                val fwd = if (e.def.id == "ram") 0.62f else 0f
+                val px = v.x + sin(v.yaw) * fwd
+                val pz = v.z + cos(v.yaw) * fwd
+                when (e.def.id) {
+                    "harpy" -> r3d.setTransform(piece.root, v.x, lift, v.z, yaw = v.yaw, scale = scale, sy = scale * (1f + 0.4f * sin(v.animTime * 13f)))
+                    "ram" -> r3d.setTransform(piece.root, px, 0f, pz, yaw = v.yaw, scale = 0.95f)
+                    else -> r3d.setTransform(piece.root, px, lift, pz, yaw = v.yaw, scale = scale)
+                }
+            }
+            if (e.enraged && simulating && Random.nextFloat() < 0.15f) {
+                fx.burst(v.x, 1.4f, v.z, 1, 0xFF3A2A, glow = true, speed = 0.5f, up = 1.2f, size = 0.05f, life = 0.5f, gravity = -0.5f, glowIntensity = 3f)
+            }
+        }
+        val extras = enemyExtras.entries.iterator()
+        while (extras.hasNext()) {
+            val (id, piece) = extras.next()
+            if (id !in alive) {
+                release(piece)
+                extras.remove()
+            }
         }
         val it = enemyVisuals.entries.iterator()
         while (it.hasNext()) {
@@ -851,6 +1484,16 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                 else -> 1f
             }
             r3d.setTransform(m.root, x, y, z, yaw = yaw, pitch = -atan2(slope, 1f), scale = scale)
+            // Faint trails behind every shot.
+            if (simulating && Random.nextFloat() < 0.4f && fx.freeCount(true) > 40) {
+                when (p.visual) {
+                    "frost" -> fx.mote(x, y, z, TowerArt.ICE, size = 0.045f, life = 0.3f, glowIntensity = 2.4f)
+                    "brazier" -> fx.mote(x, y, z, TowerArt.FIRE, size = 0.05f, life = 0.3f, glowIntensity = 3f, rise = 0.4f)
+                    "catapult" -> fx.mote(x, y, z, 0xB8A080, size = 0.05f, life = 0.35f, glowIntensity = 1.1f)
+                    "ballista", "repeater" -> fx.mote(x, y, z, 0xDDE6FF, size = 0.025f, life = 0.18f)
+                    else -> fx.mote(x, y, z, 0xFFF0C8, size = 0.02f, life = 0.15f, glowIntensity = 1.5f)
+                }
+            }
         }
         val it = projectileVisuals.entries.iterator()
         while (it.hasNext()) {
@@ -931,8 +1574,139 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     // ------------------------------------------------------------ events -> juice
 
+    private val screenPos = FloatArray(2)
+
+    /** Sound, vibration and extra effects for every event (on top of the visuals below). */
+    private fun juice(ev: GameEvent) {
+        val a = audio
+        when (ev) {
+            is GameEvent.Shot -> when (ev.visual) {
+                "archer" -> a.play("bow", 0.28f, minGapMs = 70)
+                "ballista" -> a.play("twang", 0.45f, minGapMs = 90)
+                "repeater" -> a.play("bow", 0.22f, rate = 1.45f, minGapMs = 55)
+                "catapult" -> a.play("launch", 0.5f, minGapMs = 120)
+                "frost" -> a.play("chime", 0.18f, rate = 1.3f, minGapMs = 120)
+                "brazier" -> a.play("fire", 0.32f, minGapMs = 110)
+            }
+            is GameEvent.Hit -> when {
+                ev.visual == "catapult" -> a.play("boom", 0.5f, minGapMs = 90)
+                ev.visual == "brazier" -> a.play("fire", 0.22f, rate = 1.3f, minGapMs = 90)
+                ev.visual == "frost" -> a.play("frost_hit", 0.3f, minGapMs = 80)
+                ev.type == com.marian1x.agesofsiege.core.DamageType.ANTI_ARMOR -> a.play("bolt_hit", 0.3f, minGapMs = 60)
+                else -> a.play("arrow_hit", 0.22f, minGapMs = 50)
+            }
+            is GameEvent.EnemyDied -> {
+                a.play("die", 0.25f, minGapMs = 70)
+                a.play("coins", 0.18f, minGapMs = 110)
+                if (prefs.damageNumbers && coinFlies.size < 24 && r3d.worldToScreen(ev.x, 0.8f, ev.y, screenPos)) {
+                    coinFlies += CoinFly(screenPos[0], screenPos[1])
+                }
+                val b = battle
+                if (b != null) {
+                    val g = b.game
+                    val boss = Content.enemy(ev.defId).boss
+                    if (boss) {
+                        b.slowMo = 1.1f
+                        b.hitStop = 0.08f
+                        a.play("roar", 0.7f, rate = 0.8f, minGapMs = 0)
+                        a.haptic(120, 230)
+                    } else if (g.wave >= g.totalWaves && g.enemies.count { it.alive } <= 1) {
+                        b.slowMo = 0.8f // the very last raider
+                    }
+                    b.race?.let { r ->
+                        r.killsBanked++
+                        if (r.killsBanked >= RACE_KILLS_PER_SQUAD) {
+                            r.killsBanked = 0
+                            r.tokens++
+                            hud.raceVersion++
+                        }
+                    }
+                }
+            }
+            is GameEvent.KeepHit -> {
+                a.play("keep_hit", 0.6f, minGapMs = 80)
+                a.haptic(35, 140)
+                val g = game
+                if (g.keepHp in 1..(g.keepMaxHp / 4)) a.play("bell", 0.5f, minGapMs = 3000)
+            }
+            is GameEvent.WaveStarted -> a.play("horn", 0.55f, minGapMs = 0)
+            is GameEvent.WaveCleared -> a.play("wave_clear", 0.55f, minGapMs = 0)
+            is GameEvent.Built -> {
+                risingIds += ev.structureId
+                val s = game.structures[ev.structureId]
+                if (s?.kind == StructureKind.WALL) a.play("wall", 0.5f) else a.play("build", 0.6f)
+                a.haptic(12, 60)
+            }
+            is GameEvent.Upgraded -> {
+                a.play("upgrade", 0.6f)
+                game.structures[ev.structureId]?.let { fx.ring(it.cx, 0.15f, it.cy, 22, 0x9FE3FF) }
+            }
+            is GameEvent.Specialized -> a.play("confirm", 0.7f)
+            is GameEvent.Removed -> a.play("sell", 0.6f)
+            is GameEvent.RankUp -> a.play("rank_up", 0.5f, minGapMs = 400)
+            is GameEvent.VolleyCast -> a.play("whoosh", 0.6f)
+            is GameEvent.VolleyImpact -> a.play("arrow_hit", 0.6f, minGapMs = 0)
+            is GameEvent.TroopRecruited -> a.play("blade", 0.5f)
+            is GameEvent.TroopDied -> a.play("die", 0.35f)
+            is GameEvent.AssaultStarted -> a.play("horn", 0.6f, rate = 0.85f, minGapMs = 0)
+            is GameEvent.LevelWon -> {
+                if (ev.stars == 3) toast("Flawless! Not a single raider got through.", 0xFFFFD34D)
+                finishBattle(true)
+            }
+            is GameEvent.LevelLost -> {
+                shake = 0.9f
+                finishBattle(false)
+            }
+            is GameEvent.Shatter -> {
+                a.play("shatter", 0.6f, minGapMs = 60)
+                fx.burst(ev.x, 0.5f, ev.y, 16, TowerArt.ICE, glow = true, speed = 3.2f, up = 2.6f, size = 0.06f, life = 0.6f, glowIntensity = 3f)
+                floatingTexts += FloatingText(ev.x, 1.3f, ev.y, "SHATTER! ${ev.damage}", 0xFF9FEFFF.toInt(), big = true)
+                battle?.hitStop = 0.04f
+            }
+            is GameEvent.Healed -> {
+                a.play("heal", 0.22f, minGapMs = 500)
+                fx.ring(ev.x, 0.2f, ev.y, 14, 0x7CFF9A, speed = 1.6f, life = 0.5f)
+            }
+            is GameEvent.BossEnraged -> {
+                a.play("roar", 0.9f, minGapMs = 0)
+                a.haptic(160, 220)
+                shake = max(shake, 0.6f)
+                fx.ring(ev.x, 0.2f, ev.y, 30, 0xFF3A2A, speed = 3.4f, life = 0.7f, glowIntensity = 3.5f)
+                toast("The Warlord is enraged!", 0xFFFF5A4A)
+            }
+            is GameEvent.BossSummon -> {
+                a.play("horn", 0.35f, rate = 1.5f, minGapMs = 0)
+                fx.ring(ev.x, 0.2f, ev.y, 16, 0xFF9A3A, speed = 2f)
+            }
+            is GameEvent.WallSmashed -> {
+                a.play("wall_smash", 0.8f, minGapMs = 0)
+                shake = max(shake, 0.45f)
+                fx.burst(ev.x, 0.4f, ev.y, 18, Palette.STONE_LIGHT, speed = 3f, up = 3f, size = 0.09f, life = 0.9f)
+            }
+            is GameEvent.Split -> {
+                a.play("chop", 0.7f, minGapMs = 0)
+                a.play("creak", 0.5f, minGapMs = 0)
+                fx.burst(ev.x, 0.4f, ev.y, 20, Palette.WOOD, speed = 2.8f, up = 3f, size = 0.08f, life = 0.9f)
+                shake = max(shake, 0.3f)
+            }
+            is GameEvent.TarCast -> {
+                a.play("tar", 0.7f, minGapMs = 0)
+                fx.burst(ev.x, 0.2f, ev.y, 18, 0x2A1C12, speed = 2f, up = 2f, size = 0.08f, life = 0.7f)
+            }
+            is GameEvent.MilitiaArrived -> {
+                a.play("militia", 0.7f, minGapMs = 0)
+                a.play("blade", 0.5f, minGapMs = 0)
+                fx.ring(ev.x, 0.15f, ev.y, 20, 0x9FE3FF)
+            }
+            is GameEvent.MilitiaGone -> fx.burst(ev.x, 0.4f, ev.y, 6, 0x9FE3FF, glow = true, speed = 0.8f, up = 1.5f, size = 0.04f, life = 0.5f, glowIntensity = 2f)
+            else -> Unit
+        }
+    }
+
     private fun handleEvents(events: List<GameEvent>) {
-        for (ev in events) when (ev) {
+        for (ev in events) {
+        juice(ev)
+        when (ev) {
             is GameEvent.Shot -> {
                 val s = game.structures[ev.structureId] ?: continue
                 val hy = structureVisuals[s.id]?.headY ?: 1f
@@ -1029,6 +1803,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                 mp?.onAssaultEnded(ev)
                 toast(if (ev.reached == 0) "Assault repelled – all ${ev.total} attackers fell!" else "${ev.reached} attackers broke through!", if (ev.reached == 0) 0xFF7CFC9A else 0xFFFF7A59)
             }
+            else -> Unit
+        }
         }
     }
 
@@ -1037,6 +1813,8 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         hud.toasts.add(t)
         if (hud.toasts.size > 3) hud.toasts.removeAt(0)
     }
+
+    fun toastLocked(text: String) = toast(text, 0xFFFFB0A0)
 
     fun dismissToast(t: Toast) {
         hud.toasts.remove(t)
@@ -1055,8 +1833,25 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         hud.countdown = g.countdown.toInt().coerceAtLeast(0)
         hud.enemiesLeft = g.enemies.size
         hud.keepHp = g.keepHp.coerceAtLeast(0)
-        hud.volleyReady = 1f - g.volleyCooldown / Content.VOLLEY_COOLDOWN
+        hud.volleyReady = 1f - g.volleyCooldown / g.cooldownMax(Ability.VOLLEY)
         hud.preview = g.nextWavePreview()
+        val b = battle
+        hud.inBattle = b != null
+        hud.goldOnly = g.goldOnly
+        hud.keepMax = g.keepMaxHp
+        hud.leaks = g.leaks
+        hud.intro = b != null && b.intro > 0f
+        if (b != null) {
+            hud.battleMode = b.mode
+            hud.battleName = b.level.name
+            hud.totalWaves = if (g.totalWaves == Int.MAX_VALUE) 0 else g.totalWaves
+            hud.twoStarLeaks = b.level.twoStarLeaks
+        }
+        val towers = g.availableTowers()
+        if (towers != hud.towers) hud.towers = towers
+        val abilities = Ability.entries.filter { g.abilityAllowed(it) && (b != null || it == Ability.VOLLEY || g.structures.values.any { s -> s.defId == "barracks" }) }
+        if (abilities != hud.abilities) hud.abilities = abilities
+        hud.abilityReady = abilities.associateWith { 1f - g.cooldown(it) / g.cooldownMax(it) }
         hud.selected = hud.selected?.let { sel -> g.structures[sel.id]?.let { info(it) } }
         hud.garrison = g.garrison()
         hud.armyCap = g.armyCap()
@@ -1071,17 +1866,28 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         val maxLevel: Int
         val stats: String
         when (s.kind) {
-            StructureKind.KEEP -> { name = "The Keep"; maxLevel = 1; stats = "HP ${game.keepHp}/${Content.KEEP_MAX_HP} · produces gold, wood, stone" }
+            StructureKind.KEEP -> {
+                name = "The Keep"; maxLevel = 1
+                stats = "HP ${game.keepHp}/${game.keepMaxHp}" + if (game.goldOnly) " · ${game.leaks} raiders got in" else " · produces gold, wood, stone"
+            }
             StructureKind.TOWER -> {
                 val d = s.towerDef
                 name = d.name; maxLevel = d.upgradeCosts.size + 1
                 val effect = when {
+                    d.isSupport -> ""
+                    !d.hitsAir -> " · Ground only"
                     d.chillSeconds > 0f -> " · Slow"
                     d.splash > 0f -> " · Splash"
                     d.damageType == com.marian1x.agesofsiege.core.DamageType.ANTI_ARMOR -> " · Anti-armor"
                     else -> ""
                 }
-                stats = "DMG ${"%.0f".format(s.towerDamage)} · RNG ${"%.1f".format(s.towerRange)}\n${"%.2f".format(s.towerFireRate)} shots/s$effect"
+                stats = if (d.isSupport) {
+                    val f = 1f + 0.5f * (s.level - 1)
+                    "+${(d.auraDamage * f * 100).toInt()}% damage · +${(d.auraRate * f * 100).toInt()}% speed\nfor towers within ${"%.1f".format(s.towerRange)} tiles"
+                } else {
+                    val aura = if (s.auraDamage > 0f) " · Banner +${(s.auraDamage * 100).toInt()}%" else ""
+                    "DMG ${"%.0f".format(s.towerDamage)} · RNG ${"%.1f".format(s.towerRange)}\n${"%.2f".format(s.towerFireRate)} shots/s$effect$aura"
+                }
             }
             StructureKind.WALL -> { name = "Stone Wall"; maxLevel = 1; stats = "Blocks raider paths" }
             StructureKind.BUILDING -> {
@@ -1099,6 +1905,9 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         return SelectedInfo(
             s.id, name, s.kind, s.level, maxLevel, s.rank, s.xp, next, s.kills,
             game.upgradeCost(s), s.invested * Content.SELL_REFUND, stats, s.specialization,
+            priority = s.priority,
+            support = s.kind == StructureKind.TOWER && s.towerDef.isSupport,
+            specCost = game.specializationCost(),
         )
     }
 
@@ -1106,7 +1915,12 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     fun onTap(sx: Float, sy: Float) {
         if (r3d.showingRealm) {
-            onRealmTap(sx, sy)
+            if (hud.screen == Screen.WORLD) onRealmTap(sx, sy)
+            return
+        }
+        val b = battle
+        if (b != null && b.intro > 0f) {
+            skipIntro()
             return
         }
         val p = r3d.screenToGround(sx, sy) ?: return
@@ -1121,6 +1935,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                 if (result is CommandResult.Rejected) {
                     r3d.setTint(ghostMi, 0xFF4444, 0.5f)
                     toast(result.reason, 0xFFFFB0A0)
+                    audio.play("error", 0.6f)
                 } else {
                     r3d.setTint(ghostMi, 0x55FF77, 0.45f)
                     handleEvents(game.drainEvents())
@@ -1128,13 +1943,18 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
                     if (!game.res.canAfford(game.costOf(mode.defId))) hud.mode = InputMode.Normal
                 }
             }
-            InputMode.Volley -> {
-                val r = game.execute(Command.CastVolley(p[0], p[2]))
-                if (r is CommandResult.Rejected) toast(r.reason, 0xFFFFB0A0) else handleEvents(game.drainEvents())
+            is InputMode.Cast -> {
+                val r = game.execute(Command.CastAbility(mode.ability, p[0], p[2]))
+                if (r is CommandResult.Rejected) {
+                    toast(r.reason, 0xFFFFB0A0)
+                    audio.play("error", 0.6f)
+                } else handleEvents(game.drainEvents())
                 hud.mode = InputMode.Normal
             }
             InputMode.Normal -> {
-                hud.selected = pickStructure(sx, sy)?.let { info(it) }
+                val picked = pickStructure(sx, sy)
+                if (picked != null) audio.play("select", 0.5f)
+                hud.selected = picked?.let { info(it) }
             }
         }
         refreshHud()
@@ -1255,7 +2075,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     /** Shows the scene that matches the current screen; swaps camera rigs on change. */
     private fun syncView() {
-        val wantRealm = hud.screen == Screen.WORLD
+        val wantRealm = hud.screen == Screen.WORLD || hud.screen == Screen.CAMPAIGN
         if (wantRealm == r3d.showingRealm) return
         val from = if (r3d.showingRealm) realmRig else baseRig
         from.x = r3d.camTargetX; from.z = r3d.camTargetZ; from.dist = zoomTo ?: r3d.camDistance; from.yaw = gameYaw
@@ -1264,7 +2084,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         zoomOverscroll = 0f
         val to = if (wantRealm) realmRig else baseRig
         if (wantRealm) {
-            if (to.x == 0f && to.z == 0f || hud.realmSel == null) {
+            if (hud.screen == Screen.WORLD && (to.x == 0f && to.z == 0f || hud.realmSel == null)) {
                 // Rise above your own capital.
                 to.x = RealmView.cellCenter(campaign.world.home.first) + 4f
                 to.z = RealmView.cellCenter(campaign.world.home.second)
@@ -1320,7 +2140,7 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
             // Pinching in further over your own capital drops you into the base.
             val hx = RealmView.cellCenter(campaign.world.home.first) - r3d.camTargetX
             val hz = RealmView.cellCenter(campaign.world.home.second) - r3d.camTargetZ
-            val overHome = hx * hx + hz * hz < 36f
+            val overHome = hx * hx + hz * hz < 36f && hud.screen == Screen.WORLD
             zoomOverscroll = if (want < RealmView.MIN_DIST && overHome) zoomOverscroll + (RealmView.MIN_DIST - want) else 0f
             if (zoomOverscroll > 2.5f) openBase()
         } else {
@@ -1363,13 +2183,25 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
         hud.mode = if (defId == null || (hud.mode as? InputMode.Build)?.defId == defId) InputMode.Normal else InputMode.Build(defId)
     }
 
-    fun armVolley() {
-        if (game.volleyCooldown > 0f) {
-            toast("Volley recharging", 0xFFFFB0A0)
+    fun armVolley() = armAbility(Ability.VOLLEY)
+
+    fun armAbility(a: Ability) {
+        if (game.cooldown(a) > 0f) {
+            toast("${a.label} recharging", 0xFFFFB0A0)
+            audio.play("error", 0.5f)
             return
         }
         hud.selected = null
-        hud.mode = if (hud.mode == InputMode.Volley) InputMode.Normal else InputMode.Volley
+        val armed = (hud.mode as? InputMode.Cast)?.ability == a
+        hud.mode = if (armed) InputMode.Normal else InputMode.Cast(a)
+        audio.play("toggle", 0.5f)
+    }
+
+    fun setPriority(p: TargetPriority) {
+        val sel = hud.selected ?: return
+        game.execute(Command.SetPriority(sel.id, p))
+        audio.play("toggle", 0.5f)
+        refreshHud()
     }
 
     fun callWave() {
@@ -1381,7 +2213,10 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
     fun upgradeSelected() {
         val sel = hud.selected ?: return
         val r = game.execute(Command.Upgrade(sel.id))
-        if (r is CommandResult.Rejected) toast(r.reason, 0xFFFFB0A0) else handleEvents(game.drainEvents())
+        if (r is CommandResult.Rejected) {
+            toast(r.reason, 0xFFFFB0A0)
+            audio.play("error", 0.6f)
+        } else handleEvents(game.drainEvents())
         refreshHud()
     }
 
@@ -1456,6 +2291,10 @@ class GameController(private val context: Context) : Choreographer.FrameCallback
 
     companion object {
         /** Kenney mini characters are ~1 unit tall; raiders are drawn a bit over half a tile tall. */
+        /** Fixed realm seed of the illustrated campaign map. */
+        const val CAMPAIGN_MAP_SEED = 0x5E1A6E5L
+        /** Race: kills needed to earn one raider squad to send. */
+        const val RACE_KILLS_PER_SQUAD = 6
         const val UNIT_VISUAL_SCALE = 0.8f
         const val TROOP_SCALE = 0.72f
         const val MIN_ZOOM = 6f

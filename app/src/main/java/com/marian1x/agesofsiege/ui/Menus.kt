@@ -48,6 +48,7 @@ import com.marian1x.agesofsiege.core.Pace
 import com.marian1x.agesofsiege.game.GameController
 import com.marian1x.agesofsiege.game.Overlay
 import com.marian1x.agesofsiege.game.Screen
+import com.marian1x.agesofsiege.game.UiSound
 import com.marian1x.agesofsiege.update.AppUpdater
 
 // ------------------------------------------------------------------ shared building blocks
@@ -72,7 +73,10 @@ internal fun MenuButton(
             .clip(RoundedCornerShape(12.dp))
             .background(bg)
             .border(1.dp, if (primary) Color(0xFFFFE6A0) else PanelBorder, RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(enabled = enabled) {
+                UiSound.click()
+                onClick()
+            }
             .padding(horizontal = 18.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -90,7 +94,10 @@ internal fun ChipRow(options: List<String>, selected: Int, onSelect: (Int) -> Un
                 color = if (on) Color(0xFF1A1F2B) else Color.White,
                 modifier = Modifier.clip(RoundedCornerShape(10.dp))
                     .background(if (on) Gold else Color(0xFF2B3243))
-                    .clickable { onSelect(i) }
+                    .clickable {
+                        UiSound.click()
+                        onSelect(i)
+                    }
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
@@ -105,6 +112,17 @@ internal fun ToggleRow(label: String, value: Boolean, onChange: (Boolean) -> Uni
             checked = value, onCheckedChange = onChange,
             colors = SwitchDefaults.colors(checkedTrackColor = Gold, checkedThumbColor = Color(0xFF1A1F2B)),
         )
+    }
+}
+
+/** Volume in four steps: off, low, medium, high. */
+@Composable
+internal fun VolumeRow(label: String, value: Float, onChange: (Float) -> Unit) {
+    val steps = listOf(0f, 0.3f, 0.6f, 1f)
+    val current = steps.indices.minByOrNull { kotlin.math.abs(steps[it] - value) } ?: 2
+    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
+        ChipRow(listOf("Off", "Low", "Mid", "High"), current) { onChange(steps[it]) }
     }
 }
 
@@ -149,29 +167,44 @@ fun MainMenu(c: GameController) {
         )
     ) {
         Column(
-            Modifier.fillMaxHeight().safeDrawingPadding().padding(start = 48.dp, top = 24.dp, bottom = 24.dp).width(340.dp),
+            Modifier.fillMaxHeight().safeDrawingPadding().padding(start = 48.dp, top = 16.dp, bottom = 16.dp).width(400.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                "AGES OF SIEGE", fontFamily = GameFont, fontSize = 46.sp, color = Gold,
+                "AGES OF SIEGE", fontFamily = GameFont, fontSize = 42.sp, color = Gold,
                 style = TextStyle(shadow = Shadow(Color(0xAA000000), Offset(0f, 6f), 12f)),
             )
-            Text("Defend your keep · Explore the realm · Conquer your rival", color = TextDim, fontSize = 14.sp)
-            Spacer(Modifier.height(28.dp))
-            if (c.hasSave) {
-                MenuButton("CONTINUE", Modifier.fillMaxWidth(), primary = true) { c.continueGame() }
-                Spacer(Modifier.height(10.dp))
+            Text("Defend · Explore · Conquer", color = TextDim, fontSize = 14.sp)
+            Spacer(Modifier.height(16.dp))
+            c.hud.profileVersion // refresh stars after battles
+            val stars = c.profile.totalStars
+            MenuButton("CAMPAIGN  ★ $stars/${com.marian1x.agesofsiege.core.Levels.all.size * 3}", Modifier.fillMaxWidth(), primary = true) { c.openCampaign() }
+            Spacer(Modifier.height(8.dp))
+            val today = c.today()
+            val playedToday = c.profile.daily.containsKey(today)
+            val questsReady = c.profile.quests.count { it.done && !it.claimed }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MenuButton(if (playedToday) "DAILY ✔" else "DAILY • NEW", Modifier.weight(1f)) { c.hud.overlay = Overlay.DAILY }
+                MenuButton(if (questsReady > 0) "QUESTS •$questsReady" else "QUESTS", Modifier.weight(1f)) { c.hud.overlay = Overlay.QUESTS }
             }
-            MenuButton("NEW GAME", Modifier.fillMaxWidth(), primary = !c.hasSave) { c.hud.overlay = Overlay.NEW_GAME }
-            Spacer(Modifier.height(10.dp))
-            MenuButton("PLAY WITH A FRIEND", Modifier.fillMaxWidth()) { c.hud.overlay = Overlay.MULTIPLAYER }
-            Spacer(Modifier.height(10.dp))
-            MenuButton("SETTINGS", Modifier.fillMaxWidth()) { c.hud.overlay = Overlay.SETTINGS }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (c.hasSave) {
+                    MenuButton("REALM", Modifier.weight(1f)) { c.continueGame() }
+                }
+                MenuButton(if (c.hasSave) "NEW REALM" else "REALM", Modifier.weight(1f)) { c.hud.overlay = Overlay.NEW_GAME }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MenuButton("WITH A FRIEND", Modifier.weight(1f)) { c.hud.overlay = Overlay.MULTIPLAYER }
+                MenuButton("SETTINGS", Modifier.weight(1f)) { c.hud.overlay = Overlay.SETTINGS }
+            }
             if (updateWaiting || AppUpdater.availableRelease != null) {
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(10.dp))
                 UpdateCard()
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(14.dp))
             Text("Prototype · Medieval Age · v${BuildConfig.VERSION_NAME}", color = Color(0x80FFFFFF), fontSize = 12.sp)
             Text("Art: Kenney (CC0) · Sky: Poly Haven (CC0)", color = Color(0x80FFFFFF), fontSize = 12.sp)
         }
@@ -219,6 +252,24 @@ fun NewGamePanel(c: GameController) {
 @Composable
 fun PauseMenu(c: GameController) {
     GameDialog(if (c.inMatch) "Match menu" else "Paused", width = 340, onClose = { c.hud.overlay = Overlay.NONE }) {
+        val battle = c.battle
+        if (battle != null) {
+            Text("${battle.level.name} · ${battle.mode.label}", color = TextDim, fontSize = 13.sp)
+            Spacer(Modifier.height(12.dp))
+            MenuButton("RESUME", Modifier.fillMaxWidth(), primary = true) { c.hud.overlay = Overlay.NONE }
+            Spacer(Modifier.height(8.dp))
+            MenuButton("SETTINGS", Modifier.fillMaxWidth()) { c.hud.overlay = Overlay.SETTINGS }
+            Spacer(Modifier.height(8.dp))
+            if (battle.race == null) {
+                MenuButton("RESTART BATTLE", Modifier.fillMaxWidth(), danger = true) { c.retryBattle() }
+                Spacer(Modifier.height(8.dp))
+            } else if (c.inMatch) {
+                Text("The race keeps running while this menu is open.", color = TextDim, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+            }
+            MenuButton(if (battle.race != null) "LEAVE RACE" else "RETREAT", Modifier.fillMaxWidth()) { c.leaveBattle() }
+            return@GameDialog
+        }
         Text("${c.hud.settings.lordName} · ${c.hud.settings.difficulty.label} · ${c.hud.settings.pace.label} pace", color = TextDim, fontSize = 13.sp)
         Spacer(Modifier.height(12.dp))
         MenuButton("RESUME", Modifier.fillMaxWidth(), primary = true) { c.hud.overlay = Overlay.NONE }
@@ -261,10 +312,24 @@ fun SettingsPanel(c: GameController) {
             c.applyPrefs()
         }
         Text("Battery saver turns off ambient occlusion, bloom and anti-aliasing.", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+        SectionLabel("Sound")
+        VolumeRow("Effects", prefs.sfxVolume) { prefs.sfxVolume = it; c.applyPrefs() }
+        VolumeRow("Music", prefs.musicVolume) { prefs.musicVolume = it; c.applyPrefs() }
+        ToggleRow("Vibration", prefs.haptics) { prefs.haptics = it; c.applyPrefs() }
         SectionLabel("Gameplay")
-        ToggleRow("Show damage numbers", prefs.damageNumbers) { prefs.damageNumbers = it; c.applyPrefs() }
+        ToggleRow("Show damage numbers and coins", prefs.damageNumbers) { prefs.damageNumbers = it; c.applyPrefs() }
         ToggleRow("Camera shake", prefs.cameraShake) { prefs.cameraShake = it; c.applyPrefs() }
-        if (c.hud.screen != Screen.MENU && !c.inMatch) {
+        SectionLabel("Leaderboard name")
+        var name by remember { mutableStateOf(c.playerName()) }
+        OutlinedTextField(
+            value = name, onValueChange = { name = it.take(18); c.setPlayerName(name) }, singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                focusedBorderColor = Gold, unfocusedBorderColor = PanelBorder, cursorColor = Gold,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (c.hud.screen != Screen.MENU && !c.inMatch && !c.hud.inBattle) {
             SectionLabel("This realm")
             Text("Game pace", color = Color.White, fontSize = 14.sp)
             Spacer(Modifier.height(4.dp))

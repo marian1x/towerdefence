@@ -25,8 +25,8 @@ class Fx(private val r: Renderer3D, private val cube: Mesh) {
     private val rnd = Random(11)
 
     init {
-        repeat(140) { litPool += make(false) }
-        repeat(110) { glowPool += make(true) }
+        repeat(170) { litPool += make(false) }
+        repeat(150) { glowPool += make(true) }
     }
 
     private fun make(glow: Boolean): P {
@@ -67,6 +67,45 @@ class Fx(private val r: Renderer3D, private val cube: Mesh) {
             p.mi.setParameter("flash", glowIntensity - 1f)
         }
     }
+
+    /** An expanding ring of sparks on the ground (upgrades, summons, enrage). */
+    fun ring(x: Float, y: Float, z: Float, count: Int, color: Int, speed: Float = 2.6f, size: Float = 0.06f, life: Float = 0.55f, glowIntensity: Float = 2.5f) {
+        for (i in 0 until count) {
+            val p = take(true) ?: return
+            val a = i * 6.2832f / count
+            p.x = x + cos(a) * 0.2f; p.y = y; p.z = z + sin(a) * 0.2f
+            p.vx = cos(a) * speed; p.vz = sin(a) * speed; p.vy = 0.4f
+            p.maxLife = life; p.life = life
+            p.size = size; p.gravity = 0f; p.spin = 0f; p.grow = false
+            r.setTint(p.mi, color)
+            p.mi.setParameter("flash", glowIntensity - 1f)
+        }
+    }
+
+    /** One still, glowing mote that fades out (projectile trails). */
+    fun mote(x: Float, y: Float, z: Float, color: Int, size: Float = 0.035f, life: Float = 0.22f, glowIntensity: Float = 1.8f, rise: Float = 0f) {
+        val p = take(true) ?: return
+        p.x = x; p.y = y; p.z = z
+        p.vx = 0f; p.vz = 0f; p.vy = rise
+        p.maxLife = life; p.life = life
+        p.size = size; p.gravity = 0f; p.spin = 0f; p.grow = false
+        r.setTint(p.mi, color)
+        p.mi.setParameter("flash", glowIntensity - 1f)
+    }
+
+    /** Weather: drifting particles (snow, ash, embers, fireflies). */
+    fun drift(x: Float, y: Float, z: Float, color: Int, glow: Boolean, vx: Float, vy: Float, vz: Float, size: Float, life: Float, glowIntensity: Float = 1f) {
+        val p = take(glow) ?: return
+        p.x = x; p.y = y; p.z = z
+        p.vx = vx; p.vy = vy; p.vz = vz
+        p.maxLife = life; p.life = life
+        p.size = size; p.gravity = 0f; p.spin = rnd.nextFloat() * 6f; p.grow = false
+        r.setTint(p.mi, color)
+        p.mi.setParameter("flash", glowIntensity - 1f)
+    }
+
+    /** Free particles left in a pool (weather stays polite when the battle needs sparks). */
+    fun freeCount(glow: Boolean) = (if (glow) glowPool else litPool).count { !it.active }
 
     private fun varyColor(c: Int): Int {
         val f = 0.85f + rnd.nextFloat() * 0.3f

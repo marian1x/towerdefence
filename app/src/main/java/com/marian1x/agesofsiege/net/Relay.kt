@@ -90,6 +90,7 @@ internal fun Socket.expectReply(expected: String) {
         "ERROR lobby-unavailable" -> RelayException("This server has no friends lobby.", retryable = false)
         "ERROR lobby-full" -> RelayException("This lobby is full.")
         "ERROR room-unavailable" -> RelayException("This room is unavailable. Ask the host to check the invite.")
+        "ERROR invalid-request" -> RelayException("The game server is out of date. Update it with server/install-pi.sh.", retryable = false)
         else -> RelayException("Invalid response from the relay.", retryable = false)
     }
 }

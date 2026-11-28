@@ -12,6 +12,8 @@ import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -180,24 +182,39 @@ private fun HostSetup(c: GameController, name: String, online: Boolean) {
         TextFieldRow(address, { address = it.take(280) }, "Relay server hostname", KeyboardType.Uri)
         TextFieldRow(hostKey, { hostKey = it.take(128) }, "Relay host key", KeyboardType.Password)
     }
+    var raceLevel by remember { mutableStateOf<String?>(null) }
     SectionLabel("Mode")
     ChipRow(MatchMode.entries.map { it.label }, mode.ordinal) { mode = MatchMode.entries[it] }
     Text(
-        if (mode == MatchMode.VERSUS) "Each of you rules one end of the realm. Race for loot and storm your friend's base – their towers fight back live."
-        else "Neighbouring capitals. Share soldiers and supplies and defeat the rival lord together.",
+        when (mode) {
+            MatchMode.VERSUS -> "Each of you rules one end of the realm. Race for loot and storm your friend's base – their towers fight back live."
+            MatchMode.COOP -> "Neighbouring capitals. Share soldiers and supplies and defeat the rival lord together."
+            MatchMode.RACE -> "Both of you fight the same campaign battle at once. Every ${GameController.RACE_KILLS_PER_SQUAD} kills earn a raider squad to send into your friend's battlefield. Best result wins!"
+        },
         color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp),
     )
-    SectionLabel("Raider strength")
-    ChipRow(Difficulty.entries.map { it.label }, difficulty.ordinal) { difficulty = Difficulty.entries[it] }
-    SectionLabel("Game pace")
-    ChipRow(Pace.entries.map { it.label }, pace.ordinal) { pace = Pace.entries[it] }
+    if (mode == MatchMode.RACE) {
+        SectionLabel("Battlefield")
+        val levels = com.marian1x.agesofsiege.core.Levels.all
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ChipRow(listOf("Random") + levels.map { it.id }, if (raceLevel == null) 0 else levels.indexOfFirst { it.id == raceLevel } + 1) {
+                raceLevel = if (it == 0) null else levels[it - 1].id
+            }
+        }
+        raceLevel?.let { id -> Text(com.marian1x.agesofsiege.core.Levels.get(id)?.name ?: "", color = Color.White, fontSize = 12.sp) }
+    } else {
+        SectionLabel("Raider strength")
+        ChipRow(Difficulty.entries.map { it.label }, difficulty.ordinal) { difficulty = Difficulty.entries[it] }
+        SectionLabel("Game pace")
+        ChipRow(Pace.entries.map { it.label }, pace.ordinal) { pace = Pace.entries[it] }
+    }
     Spacer(Modifier.height(12.dp))
     MenuButton(
         "HOST GAME",
         Modifier.fillMaxWidth(),
         primary = true,
         enabled = !online || (endpoint != null && validRelayHostKey(hostKey.trim())),
-    ) { c.hostMatch(name, mode, difficulty, pace, endpoint, hostKey.trim()) }
+    ) { c.hostMatch(name, mode, difficulty, pace, endpoint, hostKey.trim(), raceLevel = if (mode == MatchMode.RACE) raceLevel else null) }
     Text("Your single-player game stays saved and untouched.", color = TextDim, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
 }
 
@@ -274,7 +291,7 @@ private fun Lobby(c: GameController, s: MpSession) {
         }
         s.setup?.let { setup ->
             SectionLabel("Match")
-            Text("${setup.mode.label} · ${setup.difficulty.label} raiders · ${setup.pace.label} pace", color = Color.White, fontSize = 13.sp)
+            Text(matchLabel(setup), color = Color.White, fontSize = 13.sp)
             for (p in setup.players) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                     Box(Modifier.size(10.dp).clip(CircleShape).background(if (p.slot == 0) Color(0xFF6FA0FF) else Color(0xFFFF8A7A)))
@@ -284,7 +301,7 @@ private fun Lobby(c: GameController, s: MpSession) {
             }
         }
     } else s.setup?.let { setup ->
-        Text("${setup.mode.label} · ${setup.difficulty.label} raiders · ${setup.pace.label} pace", color = TextDim, fontSize = 12.sp)
+        Text(matchLabel(setup), color = TextDim, fontSize = 12.sp)
     }
     Spacer(Modifier.height(14.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -316,11 +333,20 @@ internal fun MatchBadge(c: GameController, modifier: Modifier = Modifier) {
     }
 }
 
+private fun matchLabel(setup: com.marian1x.agesofsiege.core.MatchSetup): String =
+    if (setup.mode == MatchMode.RACE) "Race · " + (com.marian1x.agesofsiege.core.Levels.get(setup.level ?: "")?.let { "${it.id} ${it.name}" } ?: "random battlefield")
+    else "${setup.mode.label} · ${setup.difficulty.label} raiders · ${setup.pace.label} pace"
+
 @Composable
 internal fun WaitingForFriend(c: GameController) {
-    val view = c.campaign.mp ?: return
+    val view = c.campaign.mp
+    val race = c.hud.race
+    if (view == null && race == null) return
     val s = c.mp ?: return
     if (s.peerConnected) return
+    // A race whose opponent left simply goes on alone.
+    if (race != null && s.phase == MpSession.Phase.ENDED) return
+    val otherName = view?.other?.name ?: race?.opponent
     Box(
         Modifier.fillMaxSize().background(Color(0x88000000))
             .clickable(interactionSource = null, indication = null) {}.safeDrawingPadding(),
@@ -331,7 +357,7 @@ internal fun WaitingForFriend(c: GameController) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             val ended = s.phase == MpSession.Phase.ENDED
-            val title = if (ended) "Match ended" else "Waiting for ${view.other?.name ?: "your friend"}…"
+            val title = if (ended) "Match ended" else "Waiting for ${otherName ?: "your friend"}…"
             Text(title, fontFamily = GameFont, fontSize = 22.sp, color = Gold)
             Text(
                 when {

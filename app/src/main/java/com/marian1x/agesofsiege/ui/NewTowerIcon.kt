@@ -61,6 +61,13 @@ internal fun NewTowerIcon(id: String, modifier: Modifier) {
                     cap = StrokeCap.Round,
                 )
             }
+            "banner" -> {
+                // Pole, red war flag with a gold stripe.
+                drawLine(Color(0xFF6E4A2A), Offset(19f * u, 38f * u), Offset(19f * u, 4f * u), 2.6f * u, cap = StrokeCap.Round)
+                drawCircle(Color(0xFFF2C14E), 2.4f * u, Offset(19f * u, 4f * u))
+                face(0xFFC4533A, 20f to 7f, 40f to 9f, 37f to 16f, 40f to 23f, 20f to 22f)
+                face(0xFFF2C14E, 20f to 13f, 39f to 14f, 38f to 17f, 20f to 16f)
+            }
         }
     }
 }

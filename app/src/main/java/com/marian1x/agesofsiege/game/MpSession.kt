@@ -50,6 +50,9 @@ class MpSession private constructor(
     private val mySlot get() = if (isHost) 0 else 1
     private var peerName: String? = null
     private var mode = MatchMode.VERSUS
+    /** Race: the level the host picked (null = random). */
+    private var raceLevel: String? = null
+    private var raceSquads = 0
     private var difficulty = Difficulty.NORMAL
     private var pace = Pace.STANDARD
     private var lanHost: LanHost? = null
@@ -84,8 +87,10 @@ class MpSession private constructor(
             endpoint: RelayEndpoint? = null,
             hostKey: String = "",
             lobbyInvite: RelayInvite? = null,
+            raceLevel: String? = null,
         ) = MpSession(c, true, name, isOnline = endpoint != null).apply {
                 this.mode = mode
+                this.raceLevel = raceLevel
                 this.difficulty = difficulty
                 this.pace = pace
                 startOnJoin = lobbyInvite != null
@@ -181,6 +186,8 @@ class MpSession private constructor(
         val seed = now and 0xffffff
         val world = World(MatchRules.worldSeed(seed))
         val homes = MatchRules.homes(world, mode)
+        val level = if (mode != MatchMode.RACE) null else
+            raceLevel ?: com.marian1x.agesofsiege.core.Levels.all[(seed % com.marian1x.agesofsiege.core.Levels.all.size).toInt()].id
         return MatchSetup(
             matchId = now,
             seed = seed, mode = mode, difficulty = difficulty, pace = pace,
@@ -188,6 +195,7 @@ class MpSession private constructor(
                 MpPlayer(0, myName, homes[0].first, homes[0].second),
                 MpPlayer(1, guestName, homes[1].first, homes[1].second),
             ),
+            level = level,
         )
     }
 
@@ -201,7 +209,10 @@ class MpSession private constructor(
         if (phase == Phase.PLAYING) {
             when (msg) {
                 is NetMsg.Status -> realm?.handle(1, msg)
-                is NetMsg.Delivery -> if (msg.message is NetMsg.SendArmy ||
+                is NetMsg.RaceStatus -> c.onRaceStatus(msg)
+                is NetMsg.Delivery -> if (msg.message is NetMsg.RaceSend) {
+                    receive(from, msg) { c.onRaceAttack(it as NetMsg.RaceSend) }
+                } else if (msg.message is NetMsg.SendArmy ||
                     msg.message is NetMsg.AssaultResult || msg.message is NetMsg.Supplies) {
                     receive(from, msg) { realm?.handle(1, it) }
                 }
@@ -250,10 +261,42 @@ class MpSession private constructor(
     fun startMatch() {
         val s = setup ?: return
         if (!isHost || phase != Phase.LOBBY || !peerConnected || link?.closed != false) return
-        realm = MatchRealm(s)
         phase = Phase.PLAYING
         link?.send(NetMsg.Start(s))
-        c.beginMatch(this, s, 0)
+        if (s.mode == MatchMode.RACE) {
+            c.beginRace(this, s, 0)
+        } else {
+            realm = MatchRealm(s)
+            c.beginMatch(this, s, 0)
+        }
+    }
+
+    private fun begin(s: MatchSetup) {
+        if (s.mode == MatchMode.RACE) c.beginRace(this, s, 1) else c.beginMatch(this, s, 1)
+    }
+
+    val isRace: Boolean get() = setup?.mode == MatchMode.RACE
+
+    /** Race: tell the other phone how this battle is going. */
+    fun raceStatus(g: com.marian1x.agesofsiege.core.BaseGame, force: Boolean = false) {
+        if (!isRace || (!force && !running)) return
+        val o = g.outcome
+        link?.send(NetMsg.RaceStatus(mySlot, g.wave, g.keepHp.coerceAtLeast(0), g.keepMaxHp, g.leaks, g.score(), o != null, o == com.marian1x.agesofsiege.core.Outcome.WON))
+    }
+
+    /** Race: a raider squad marches into the opponent's battlefield. Returns an error or null. */
+    fun sendRaceSquad(g: com.marian1x.agesofsiege.core.BaseGame): String? {
+        if (!running) return "Wait for your friend to reconnect"
+        val level = g.level ?: return "Not in a race"
+        val (enemyId, units) = when {
+            g.wave < 4 -> "raider" to 4
+            g.wave < 8 -> "outrider" to 3
+            else -> "brute" to 2
+        }
+        val def = com.marian1x.agesofsiege.core.Content.enemy(enemyId)
+        raceSquads++
+        sendReliably(NetMsg.RaceSend((mySlot + 1) * 100_000 + raceSquads, units, def.hp * level.hpFor(g.wave) * 1.1f, enemyId))
+        return null
     }
 
     private fun onGuestMessage(from: Connection, msg: NetMsg) {
@@ -271,7 +314,7 @@ class MpSession private constructor(
                 peerConnected = true
                 if (msg.started) {
                     phase = Phase.PLAYING
-                    c.beginMatch(this, msg.setup, 1)
+                    begin(msg.setup)
                     pending.values.forEach(from::send)
                 } else {
                     phase = Phase.LOBBY
@@ -280,8 +323,9 @@ class MpSession private constructor(
             }
             is NetMsg.Start -> if (peerConnected && phase == Phase.LOBBY && setup?.matchId == msg.setup.matchId) {
                 phase = Phase.PLAYING
-                c.beginMatch(this, msg.setup, 1)
+                begin(msg.setup)
             }
+            is NetMsg.RaceStatus -> if (phase == Phase.PLAYING) c.onRaceStatus(msg)
             is NetMsg.Snapshot -> if (running) applyLocal(msg)
             is NetMsg.Delivery -> if (running) receive(from, msg, ::applyLocal)
             is NetMsg.Ack -> if (running) pending.remove(msg.sequence)
@@ -343,6 +387,7 @@ class MpSession private constructor(
             }
             is NetMsg.Report -> c.mpReport(msg.text, msg.good)
             is NetMsg.Assault -> camp.base.launchAssault(msg.assaultId, msg.units, msg.hp, msg.from, msg.enemyId)
+            is NetMsg.RaceSend -> c.onRaceAttack(msg)
             else -> Unit
         }
     }
@@ -364,7 +409,9 @@ class MpSession private constructor(
         statusTimer -= dt
         if (statusTimer <= 0f) {
             statusTimer = 1f
-            if (running) {
+            if (running && isRace) {
+                raceStatus(c.game)
+            } else if (running) {
                 val base = c.campaign.base
                 val heartbeat = NetMsg.Status(mySlot, MatchRules.defenseOf(base), base.troops.size, base.wave)
                 if (isHost) realm?.handle(0, heartbeat) else connection.send(heartbeat)

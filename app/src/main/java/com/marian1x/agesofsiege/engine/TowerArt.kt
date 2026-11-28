@@ -16,10 +16,11 @@ internal object TowerArt {
     private const val IVORY = 0xEAF8FF
     private const val GREEN = 0x54806A
 
-    fun hasBody(id: String) = id == "frost" || id == "brazier" || id == "repeater"
+    fun hasBody(id: String) = id == "frost" || id == "brazier" || id == "repeater" || id == "banner"
 
     fun body(builder: MeshBuilder, id: String, tier: Int) = with(builder) {
         when (id) {
+            "banner" -> BattleArt.banner(this, tier)
             "frost" -> {
                 prism(8, 0.45f, 0.41f, 0f, 0.15f, Palette.STONE_DARK, Palette.STONE_LIGHT)
                 prism(6, 0.29f, 0.23f, 0.15f, 0.76f, BASALT, Palette.STONE_LIGHT)
@@ -99,16 +100,25 @@ internal object TowerArt {
     }
 
     /** Entrance flags sit at the island edge, clear of buildable tiles. */
-    fun gates(builder: MeshBuilder, gates: List<Pair<Int, Int>>) = with(builder) {
+    fun gates(builder: MeshBuilder, gates: List<Pair<Int, Int>>, allOpen: Boolean = false, width: Int = 26, height: Int = 16) = with(builder) {
         for ((index, gate) in gates.withIndex()) {
             val (x, z) = gate
-            val color = if (index < Content.gatesFor(1)) Palette.ROOF_RED else 0x807DA4
+            val color = if (allOpen || index < Content.gatesFor(1)) Palette.ROOF_RED else 0x807DA4
             for (side in listOf(-1f, 1f)) push {
-                if (x == 0) {
-                    translate(0.05f, 0f, z + 0.5f + side * 0.43f)
-                    rotateY(MeshBuilder.TAU / 4f)
-                } else {
-                    translate(x + 0.5f + side * 0.43f, 0f, 0.05f)
+                when {
+                    x == 0 -> {
+                        translate(0.05f, 0f, z + 0.5f + side * 0.43f)
+                        rotateY(MeshBuilder.TAU / 4f)
+                    }
+                    x == width - 1 -> {
+                        translate(width - 0.05f, 0f, z + 0.5f + side * 0.43f)
+                        rotateY(-MeshBuilder.TAU / 4f)
+                    }
+                    z == height - 1 -> {
+                        translate(x + 0.5f + side * 0.43f, 0f, height - 0.05f)
+                        rotateY(MeshBuilder.TAU / 2f)
+                    }
+                    else -> translate(x + 0.5f + side * 0.43f, 0f, 0.05f)
                 }
                 banner(this, color, 1.34f)
                 cbox(0.19f, 0.18f, 0f, 0.14f, Palette.STONE_DARK, Palette.STONE_LIGHT)

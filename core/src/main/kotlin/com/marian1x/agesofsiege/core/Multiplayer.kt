@@ -17,7 +17,7 @@ import kotlin.math.min
  * the host answers with snapshots and results. The host's own player goes through the same messages.
  */
 
-enum class MatchMode(val label: String) { VERSUS("Versus"), COOP("Co-op") }
+enum class MatchMode(val label: String) { VERSUS("Versus"), COOP("Co-op"), RACE("Race") }
 
 @Serializable
 data class MpPlayer(
@@ -43,6 +43,8 @@ data class MatchSetup(
     val difficulty: Difficulty,
     val pace: Pace,
     val players: List<MpPlayer>,
+    /** Race: the campaign level both players fight on. */
+    val level: String? = null,
 )
 
 /** Wire protocol: one JSON object per line. */
@@ -112,6 +114,17 @@ sealed class NetMsg {
     @Serializable @SerialName("supplies")
     data class Supplies(val from: Int, val to: Int, val amount: Cost) : NetMsg()
 
+    /** Race: how a player's battle is going (every second, and once when it ends). */
+    @Serializable @SerialName("race")
+    data class RaceStatus(
+        val slot: Int, val wave: Int, val keepHp: Int, val keepMax: Int, val leaks: Int, val score: Int,
+        val done: Boolean = false, val won: Boolean = false,
+    ) : NetMsg()
+
+    /** Race: a raider squad sent into the other player's battlefield. */
+    @Serializable @SerialName("raceSend")
+    data class RaceSend(val id: Int, val units: Int, val hp: Float, val enemyId: String) : NetMsg()
+
     /** A game action or result that must survive a temporary connection loss. */
     @Serializable @SerialName("delivery")
     data class Delivery(val sequence: Long, val message: NetMsg) : NetMsg()
@@ -135,7 +148,7 @@ object NetCodec {
 }
 
 object MatchRules {
-    const val PROTOCOL = 2
+    const val PROTOCOL = 3
     const val PORT = 47821
 
     /** Same derivation as [Campaign] so every phone builds the identical realm. */
@@ -143,7 +156,7 @@ object MatchRules {
 
     /** Capitals for each player: Versus = opposite ends of the realm, Co-op = neighbours in the west. */
     fun homes(world: World, mode: MatchMode): List<Pair<Int, Int>> = when (mode) {
-        MatchMode.VERSUS -> listOf(world.home, world.rivalHome)
+        MatchMode.VERSUS, MatchMode.RACE -> listOf(world.home, world.rivalHome)
         MatchMode.COOP -> listOf(world.home, coopHome(world))
     }
 

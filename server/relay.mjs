@@ -1,4 +1,5 @@
 import { createLobby, KEY_PATTERN, matchesKey } from './lobby.mjs';
+import { createScores } from './scores.mjs';
 import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 
@@ -7,7 +8,7 @@ const MAX_HANDSHAKE_BYTES = 256;
 const MAX_ROOMS = 8;
 const HANDSHAKE_TIMEOUT_MS = 5000;
 
-export function createRelay(hostKey, lobbyKey) {
+export function createRelay(hostKey, lobbyKey, scoresFile = null) {
     if (!KEY_PATTERN.test(hostKey ?? '')) {
         throw new Error('Set AGES_OF_SIEGE_HOST_KEY to a random 32–128 character key.');
     }
@@ -16,7 +17,9 @@ export function createRelay(hostKey, lobbyKey) {
         throw new Error('Set AGES_OF_SIEGE_LOBBY_KEY to a random 32–128 character key.');
     }
     const secret = Buffer.from(hostKey);
+    const lobbySecret = lobbyKey ? Buffer.from(lobbyKey) : null;
     const lobby = createLobby(lobbyKey);
+    const scores = createScores(scoresFile);
     const rooms = new Map();
     const server = createServer(socket => {
         let handshake = Buffer.alloc(0);
@@ -67,6 +70,16 @@ export function createRelay(hostKey, lobbyKey) {
                 const error = lobby.attach(socket, code, key);
                 if (error) reject(error);
                 else clearTimeout(handshakeTimeout);
+                return;
+            }
+            if (command === 'SCORES' && key === undefined) {
+                // Leaderboards are shared by the friends who know the lobby key.
+                if (!lobbySecret) reject('lobby-unavailable');
+                else if (!matchesKey(code, lobbySecret)) reject('lobby-key');
+                else {
+                    clearTimeout(handshakeTimeout);
+                    scores.attach(socket);
+                }
                 return;
             }
             if (!ROOM_PATTERN.test(code ?? '')) {
@@ -120,6 +133,7 @@ export function createRelay(hostKey, lobbyKey) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    const server = createRelay(process.env.AGES_OF_SIEGE_HOST_KEY, process.env.AGES_OF_SIEGE_LOBBY_KEY);
+    const dataDir = process.env.STATE_DIRECTORY ?? process.env.AGES_OF_SIEGE_DATA ?? '.';
+    const server = createRelay(process.env.AGES_OF_SIEGE_HOST_KEY, process.env.AGES_OF_SIEGE_LOBBY_KEY, `${dataDir}/scores.json`);
     server.listen(47822, '127.0.0.1', () => console.log('Game relay listening on 127.0.0.1:47822'));
 }

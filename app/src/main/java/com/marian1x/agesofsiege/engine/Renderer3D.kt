@@ -324,6 +324,50 @@ class Renderer3D(context: Context) {
             .build(engine)
     }
 
+    /** Lighting mood of a battlefield (levels); [Look.DEFAULT] for the realm base and menus. */
+    class Look(
+        val sun: FloatArray, val sunIntensity: Float, val sunDir: FloatArray, val ibl: Float,
+        val saturation: Float, val contrast: Float, val temperature: Float, val tint: Float,
+        val fog: FloatArray?, val fogDensity: Float = 0f, val bloom: Float = 0.05f, val exposure: Float = 16f,
+    ) {
+        companion object {
+            val DEFAULT = Look(floatArrayOf(1f, 0.92f, 0.8f), 120_000f, floatArrayOf(0.45f, -1f, -0.55f), 18_000f, 1.08f, 1.06f, 0f, 0f, null)
+        }
+    }
+
+    private var currentLook = Look.DEFAULT
+
+    fun applyLook(look: Look) {
+        if (look === currentLook) return
+        currentLook = look
+        val lm = engine.lightManager
+        val sun = lm.getInstance(sunEntity)
+        lm.setColor(sun, look.sun[0], look.sun[1], look.sun[2])
+        lm.setIntensity(sun, look.sunIntensity)
+        lm.setDirection(sun, look.sunDir[0], look.sunDir[1], look.sunDir[2])
+        scene.indirectLight?.intensity = look.ibl
+        camera.setExposure(look.exposure, 1f / 125f, 100f)
+        view.colorGrading = ColorGrading.Builder()
+            .toneMapper(ToneMapper.ACESLegacy())
+            .saturation(look.saturation)
+            .contrast(look.contrast)
+            .whiteBalance(look.temperature, look.tint)
+            .build(engine)
+        view.bloomOptions = view.bloomOptions.apply { strength = look.bloom }
+        val fog = look.fog
+        view.fogOptions = view.fogOptions.apply {
+            enabled = fog != null
+            if (fog != null) {
+                color = fog
+                density = look.fogDensity
+                distance = 8f
+                heightFalloff = 0.6f
+                maximumOpacity = 0.55f
+                height = 0f
+            }
+        }
+    }
+
     /** High = ambient occlusion, bloom and MSAA on; Low = faster for older phones. */
     fun setQuality(high: Boolean) {
         view.ambientOcclusionOptions = view.ambientOcclusionOptions.apply { enabled = high }

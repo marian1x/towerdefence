@@ -3,7 +3,7 @@ set -eu
 cd "$(dirname "$0")"
 
 install -d -m 0755 /opt/ages-of-siege
-install -m 0644 relay.mjs lobby.mjs /opt/ages-of-siege/
+install -m 0644 relay.mjs lobby.mjs scores.mjs /opt/ages-of-siege/
 install -d -m 0700 /etc/ages-of-siege
 env_file=/etc/ages-of-siege/relay.env
 umask 077

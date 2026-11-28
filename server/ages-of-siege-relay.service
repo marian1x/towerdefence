@@ -7,6 +7,8 @@ EnvironmentFile=/etc/ages-of-siege/relay.env
 ExecStart=/usr/bin/node /opt/ages-of-siege/relay.mjs
 Restart=on-failure
 DynamicUser=yes
+# Leaderboards are kept in /var/lib/ages-of-siege/scores.json (systemd sets STATE_DIRECTORY).
+StateDirectory=ages-of-siege
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

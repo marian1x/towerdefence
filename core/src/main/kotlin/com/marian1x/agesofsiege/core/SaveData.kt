@@ -13,6 +13,7 @@ data class SavedStructure(
     val kills: Int,
     val invested: Cost = Cost(),
     val specialization: TowerSpecialization? = null,
+    val priority: TargetPriority = TargetPriority.FIRST,
 )
 
 /** A soldier's persistent state (at home, or travelling with an expedition). */
