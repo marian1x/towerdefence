@@ -20,11 +20,18 @@ Approved by the user on 2026-11-28 (see "Decisions" below). Next big mode after 
 | 2 Juice + audio | Kenney CC0 SFX + synthesized sounds, procedural music with battle drums, vibration, tower rise animation, upgrade rings, projectile trails, coins flying to the HUD, hit-stop and slow motion, burning Keep, opening camera flight, per-chapter lighting/fog/weather, star-stamp results | ✅ |
 | 3 Depth | Targeting priority (First/Strongest/Fastest/Closest), new raiders (Shieldbearer, War Shaman, Sky Raider, Battering Ram), War Banner support tower, Shatter combo (fire on chilled raiders), Tar Pit + Militia abilities, Warlord boss (enrage, summons, smashes walls), illustrated campaign map on the 3D realm | ✅ |
 | 4 Meta | Glory from stars/achievements/quests, War Council perks, Heroic/Iron modes, Endless mode, 14 achievements, 3 daily quests, gilded trims for veteran tower types | ✅ |
-| 5 Competitive | Daily Challenge (same seeded level and modifiers for everyone), friends leaderboards on the Pi (`server/scores.mjs`, `AOS1 SCORES <lobby key>`), Race mode (same level on two phones, kills earn raider squads sent to the opponent) | ✅ code done. **The Pi must be updated** (see below). Race needs a two-phone test |
+| 5 Competitive | Daily Challenge (same seeded level and modifiers for everyone), friends leaderboards on the Pi (`server/scores.mjs`, `AOS1 SCORES <lobby key>`), Race mode (same level on two phones, kills earn raider squads sent to the opponent) | ✅ Deployed to the Pi on 2026-11-28 and checked from the app. Race still needs a two-phone test |
 
-### To deploy the leaderboards
-On the Pi: `git pull`, then `sudo sh server/install-pi.sh`. This copies `scores.mjs`, adds `StateDirectory=` and restarts the
-relay. Scores are stored in `/var/lib/ages-of-siege/scores.json`. Until then the app shows "The game server is out of date".
+### Deploying the server (Pi 5, `pi5@192.168.50.101`, SSH key login, passwordless sudo)
+There is no git checkout on the Pi: the files are copied over.
+1. `scp server/*.mjs server/install-pi.sh server/ages-of-siege-relay.service pi5@192.168.50.101:ages-of-siege-server/`
+2. On the Pi: `cd ~/ages-of-siege-server && sed -i 's/\r$//' *.sh *.service *.mjs && node --test relay.test.mjs && sudo sh install-pi.sh`
+
+`install-pi.sh` installs the files into `/opt/ages-of-siege`, keeps the keys in `/etc/ages-of-siege/relay.env`, and stores
+scores in `/var/lib/ages-of-siege/scores.json`. For a live check, run
+`node selftest.mjs <lobby key>` on the Pi. It writes a `selftest-0` board, so delete `scores.json` afterwards if needed.
+The backup of the pre-leaderboard install is in `~/ages-of-siege-backup-20261128` on the Pi.
+Public endpoint: Tailscale Funnel `ages-of-siege-pi5.tail20b2a.ts.net:443` → `127.0.0.1:47822`.
 
 ### Known gaps / next polish
 - The Kenney ground model has the realm's dirt entrances baked in. Campaign maps with other gates show leftover dirt
